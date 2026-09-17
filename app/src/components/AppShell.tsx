@@ -113,7 +113,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           className="w-[276px] border-sidebar-border bg-sidebar p-0 text-sidebar-foreground"
         >
           <SheetTitle className="sr-only">导航菜单</SheetTitle>
-          <SheetDescription className="sr-only">店铺商品管理后台导航</SheetDescription>
+          <SheetDescription className="sr-only">得物商品管理后台导航</SheetDescription>
           <SidebarInner />
         </SheetContent>
       </Sheet>
@@ -132,9 +132,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Button>
 
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{current?.label ?? "云铺管家"}</p>
+              <p className="truncate text-sm font-semibold">{current?.label ?? "得物"}</p>
               <p className="hidden truncate text-xs text-muted-foreground sm:block">
-                {current?.hint ?? "店铺商品管理后台"}
+                {current?.hint ?? "得物商品管理后台"}
               </p>
             </div>
 
@@ -214,8 +214,8 @@ function SidebarInner() {
           <LayoutGrid className="size-4" />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-foreground">云铺管家</p>
-          <p className="truncate text-[11px] text-muted-foreground">店铺商品管理系统</p>
+          <p className="truncate text-sm font-semibold text-foreground">得物</p>
+          <p className="truncate text-[11px] text-muted-foreground">商品管理系统</p>
         </div>
       </div>
 

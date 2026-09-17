@@ -13,6 +13,9 @@ screenshots/
 .vscode/
 .idea/
 
+# ---------- Agent 工作目录（含本机笔记，仓库公开时绝不能入库）----------
+.workbuddy/
+
 # ---------- 只提交 app/.env.production ----------
 # 该文件里只有 Supabase 的 URL 与 anon key（浏览器端公开密钥，安全性由数据库 RLS 保证）
 # 本地覆盖文件不入库

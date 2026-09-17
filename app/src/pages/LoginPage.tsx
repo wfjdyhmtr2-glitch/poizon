@@ -89,13 +89,13 @@ export function LoginPage() {
               <Sparkles className="size-5" />
             </div>
             <div>
-              <p className="text-base font-semibold">云铺管家</p>
-              <p className="text-xs text-white/60">Shop Admin Console</p>
+              <p className="text-base font-semibold">得物</p>
+              <p className="text-xs text-white/60">Dewu Shop Console</p>
             </div>
           </div>
 
           <h1 className="mt-14 max-w-md text-[34px] font-semibold leading-tight tracking-tight">
-            把店铺商品
+            把得物商品
             <br />
             管得明明白白
           </h1>
@@ -131,8 +131,8 @@ export function LoginPage() {
               <Sparkles className="size-4" />
             </div>
             <div>
-              <p className="text-sm font-semibold">云铺管家</p>
-              <p className="text-[11px] text-muted-foreground">店铺商品管理系统</p>
+              <p className="text-sm font-semibold">得物</p>
+              <p className="text-[11px] text-muted-foreground">商品管理系统</p>
             </div>
           </div>
 
