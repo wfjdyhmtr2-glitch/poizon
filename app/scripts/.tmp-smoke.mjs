@@ -419,7 +419,7 @@ async function main() {
   const pwText = await bodyText()
   console.log("  弹出密码确认:", pwText.includes("删除密码"))
   await clickByText("取消")
-  await sleep(600)
+  await sleep(1800)
   console.log("  取消后弹窗关闭:", !(await bodyText()).includes("确认删除"))
 
   console.log("\n=== 7. 批量导入页 ===")
@@ -438,7 +438,7 @@ async function main() {
     selector: 'input[type="file"]',
   })
   await s("DOM.setFileInputFiles", { files: [IMPORT_FILE], nodeId })
-  await sleep(1800)
+  await sleep(6000)
   const preview = await bodyText()
   const parsedCount = /共解析 (\d+) 行/.exec(preview)?.[1]
   console.log("  文件已解析行数:", parsedCount)

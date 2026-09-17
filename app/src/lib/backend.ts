@@ -1,4 +1,6 @@
 import type {
+  OtherExpense,
+  OtherExpenseDraft,
   Product,
   ProductDraft,
   ProductImage,
@@ -89,6 +91,12 @@ export interface Backend {
     color: string,
     size: string,
   ): Promise<{ removedQty: number }>
+
+  /* ---------- 其他费用（平台层面的支出，不绑定商品，计入盈亏）---------- */
+  listOtherExpenses(): Promise<OtherExpense[]>
+  createOtherExpense(draft: OtherExpenseDraft): Promise<OtherExpense>
+  updateOtherExpense(id: string, draft: Partial<OtherExpenseDraft>): Promise<OtherExpense>
+  deleteOtherExpenses(ids: string[]): Promise<void>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean

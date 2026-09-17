@@ -3,6 +3,7 @@ import { buildDemoProducts, buildDemoSalesOrders } from "./demoData"
 import { compressImage, placeholderImage, uid } from "./format"
 import { computeTradeStage, filterSalesOrders, orderStockEffect, sortSalesOrders, stockDelta } from "./sales"
 import type {
+  OtherExpense,
   Product,
   ProductImage,
   ProductListResult,
@@ -23,6 +24,8 @@ const PO_KEY = "yunguan.demo.purchase-orders.v1"
 const PO_SEEDED_KEY = "yunguan.demo.purchase-seeded.v1"
 const SPU_INFO_KEY = "yunguan.demo.spu-info.v1"
 const SPU_INFO_SEEDED_KEY = "yunguan.demo.spu-info-seeded.v1"
+const OTHER_KEY = "yunguan.demo.other-expenses.v1"
+const OTHER_SEEDED_KEY = "yunguan.demo.other-expenses-seeded.v1"
 const SESSION_KEY = "yunguan.demo.session.v1"
 
 const DEMO_ACCOUNT = { email: "admin@demo.com", password: "admin888" }
@@ -160,6 +163,64 @@ function writeSpuInfoStore(rows: SpuInfo[]) {
   } catch {
     throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
   }
+}
+
+/* ---------------- 演示：其他费用（平台层面的支出，不绑定商品）---------------- */
+
+/** 首次使用的演示数据，故意包含正负两个方向：充值记正、取回记负 */
+function buildDemoOtherExpenses(): OtherExpense[] {
+  const now = new Date().toISOString()
+  const rows: [string, string, string, number, string][] = [
+    ["2026-09-01", "保证金", "得物", 500, "开店保证金充值"],
+    ["2026-09-05", "保证金", "得物", -200, "部分保证金取回"],
+    ["2026-09-08", "仓储费", "得物", 180, "9 月上旬仓储费"],
+    ["2026-09-10", "取回费", "得物", 45, "平台取回手续费"],
+    ["2026-09-12", "会员费", "淘宝", 99, "店铺会员服务费"],
+  ]
+  return rows.map(([expense_date, category, platform, amount, note], i) => ({
+    id: `demo-other-${i + 1}`,
+    expense_date,
+    category,
+    platform,
+    amount,
+    note,
+    created_at: now,
+    updated_at: now,
+  }))
+}
+
+function readOtherExpenseStore(): OtherExpense[] {
+  try {
+    const raw = localStorage.getItem(OTHER_KEY)
+    if (raw) return JSON.parse(raw) as OtherExpense[]
+    if (localStorage.getItem(OTHER_SEEDED_KEY)) return []
+  } catch {
+    /* ignore */
+  }
+  const seeded = buildDemoOtherExpenses()
+  try {
+    localStorage.setItem(OTHER_KEY, JSON.stringify(seeded))
+    localStorage.setItem(OTHER_SEEDED_KEY, "1")
+  } catch {
+    /* ignore */
+  }
+  return seeded
+}
+
+function writeOtherExpenseStore(rows: OtherExpense[]) {
+  try {
+    localStorage.setItem(OTHER_KEY, JSON.stringify(rows))
+  } catch {
+    throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
+  }
+}
+
+/** 日期倒序；同日按创建时间倒序 */
+function sortOtherExpenses(rows: OtherExpense[]): OtherExpense[] {
+  return [...rows].sort((a, b) => {
+    if (a.expense_date !== b.expense_date) return a.expense_date < b.expense_date ? 1 : -1
+    return a.created_at < b.created_at ? 1 : -1
+  })
 }
 
 /* ---------------- 演示：入仓单（采购订单）存储 ---------------- */
@@ -881,6 +942,51 @@ export function createDemoBackend(): Backend {
       const removed = rows.filter((o) => set.has(o.id))
       for (const po of removed) applyPurchaseToProducts(po.items, -1)
       writePurchaseStore(rows.filter((o) => !set.has(o.id)))
+    },
+
+    /* ---------- 其他费用（不绑定商品，计入盈亏）---------- */
+
+    async listOtherExpenses() {
+      return sortOtherExpenses(readOtherExpenseStore())
+    },
+
+    async createOtherExpense(draft) {
+      const category = draft.category.trim()
+      if (!category) throw new BackendError("费用类别不能为空")
+      if (!Number.isFinite(draft.amount)) throw new BackendError("金额必须是数字")
+      const now = new Date().toISOString()
+      const row: OtherExpense = {
+        id: uid(),
+        expense_date: draft.expense_date,
+        category,
+        platform: draft.platform?.trim() || null,
+        amount: draft.amount,
+        note: draft.note?.trim() || null,
+        created_at: now,
+        updated_at: now,
+      }
+      writeOtherExpenseStore([row, ...readOtherExpenseStore()])
+      return row
+    },
+
+    async updateOtherExpense(id, draft) {
+      const rows = readOtherExpenseStore()
+      const idx = rows.findIndex((r) => r.id === id)
+      if (idx < 0) throw new BackendError("记录不存在或已被删除")
+      const next: OtherExpense = { ...rows[idx], updated_at: new Date().toISOString() }
+      if (draft.expense_date !== undefined) next.expense_date = draft.expense_date
+      if (draft.category !== undefined) next.category = draft.category.trim() || "其他"
+      if (draft.platform !== undefined) next.platform = draft.platform?.trim() || null
+      if (draft.amount !== undefined) next.amount = draft.amount
+      if (draft.note !== undefined) next.note = draft.note?.trim() || null
+      rows[idx] = next
+      writeOtherExpenseStore(rows)
+      return next
+    },
+
+    async deleteOtherExpenses(ids) {
+      const set = new Set(ids)
+      writeOtherExpenseStore(readOtherExpenseStore().filter((r) => !set.has(r.id)))
     },
 
     supportsUpload: true,

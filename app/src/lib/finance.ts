@@ -1,4 +1,4 @@
-import type { Product, SalesOrder, SpuMapping } from "./types"
+import type { OtherExpense, Product, SalesOrder, SpuMapping } from "./types"
 
 /** 财务看板的 SPU 明细行 */
 export interface FinanceSpuRow {
@@ -37,7 +37,12 @@ export interface FinanceSummary {
   soldCost: number
   soldShipping: number
   soldRebate: number
-  /** 已卖盈亏 = 结算金额 - 成本 - 运费 + 补贴 - 其他费用(暂 0) */
+  /**
+   * 其他费用净额（正 = 支出，负 = 收回）。
+   * 来源是「其他费用」模块：保证金、仓储费、取回费、会员费等，不绑定商品。
+   */
+  otherExpenseTotal: number
+  /** 已卖盈亏 = 结算金额 - 成本 - 运费 + 补贴 - 其他费用 */
   soldPnl: number
   /** 总盈亏（现金口径）= 已卖盈亏 - 手里存货的投入 */
   totalPnl: number
@@ -52,7 +57,9 @@ export interface FinanceSummary {
  * 财务汇总。
  * 口径：
  * - 「已卖」= 交易成功且未退货的订单（正常成交，含已结算与未结算；未结算按预计收入计）。
- * - 单件盈亏 = 结算金额 - 成本价 - 运费 + 补贴(返利) - 其他费用（暂未接入，按 0）。
+ * - 单件盈亏 = 结算金额 - 成本价 - 运费 + 补贴(返利)。
+ * - 「其他费用」= 平台层面的支出（保证金 / 仓储费 / 取回费 / 会员费…），不绑定商品，
+ *   按净额整体从已卖盈亏里扣除——正数是支出、负数是收回。
  * - 「手里」= 可用库存 + 锁定库存。
  * - 采购总花费 = Σ (已卖件数 + 手里件数) × 成本价。
  * - 总盈亏 = 已卖盈亏 - 手里存货的投入（(成本+运费) × 手里件数），现金口径。
@@ -61,6 +68,7 @@ export function buildFinanceSummary(
   orders: SalesOrder[],
   products: Product[],
   mappings: SpuMapping[] = [],
+  otherExpenses: OtherExpense[] = [],
 ): FinanceSummary {
   const externalToSku = new Map(mappings.map((m) => [m.external_id, m.sku]))
   const resolveSku = (sku: string) => externalToSku.get(sku) ?? sku
@@ -144,7 +152,12 @@ export function buildFinanceSummary(
   const soldCost = sum((r) => r.soldCost)
   const soldShipping = sum((r) => r.soldShipping)
   const soldRebate = sum((r) => r.soldRebate)
-  const soldPnl = soldIncome - soldCost - soldShipping + soldRebate
+  /** 其他费用净额：正数支出、负数收回，直接作为已卖盈亏的减项 */
+  const otherExpenseTotal = otherExpenses.reduce(
+    (acc, e) => acc + (Number.isFinite(e.amount) ? e.amount : 0),
+    0,
+  )
+  const soldPnl = soldIncome - soldCost - soldShipping + soldRebate - otherExpenseTotal
 
   return {
     purchaseSpend,
@@ -155,6 +168,7 @@ export function buildFinanceSummary(
     soldCost,
     soldShipping,
     soldRebate,
+    otherExpenseTotal,
     soldPnl,
     totalPnl: soldPnl - onhandInvestment,
     unmatchedSoldOrders,

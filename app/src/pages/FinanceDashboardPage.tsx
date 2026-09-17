@@ -26,7 +26,7 @@ import { ErrorBlock, LoadingBlock, PageHeader, StatCard } from "@/components/com
 import { useApp } from "@/contexts/AppContext"
 import { buildFinanceSummary, type FinanceSummary } from "@/lib/finance"
 import { formatCompact, formatMoney } from "@/lib/format"
-import type { Product, SalesOrder, SpuMapping } from "@/lib/types"
+import type { OtherExpense, Product, SalesOrder, SpuMapping } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 function Pnl({ value, className }: { value: number; className?: string }) {
@@ -50,6 +50,7 @@ export function FinanceDashboardPage() {
   const [orders, setOrders] = useState<SalesOrder[] | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [mappings, setMappings] = useState<SpuMapping[]>([])
+  const [otherExpenses, setOtherExpenses] = useState<OtherExpense[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -57,14 +58,16 @@ export function FinanceDashboardPage() {
     setLoading(true)
     setError(null)
     try {
-      const [orderRows, productRows, mappingRows] = await Promise.all([
+      const [orderRows, productRows, mappingRows, otherRows] = await Promise.all([
         backend.fetchSalesForDashboard(),
         backend.fetchForDashboard(),
         backend.listSpuMappings().catch(() => [] as SpuMapping[]),
+        backend.listOtherExpenses().catch(() => [] as OtherExpense[]),
       ])
       setOrders(orderRows)
       setProducts(productRows)
       setMappings(mappingRows)
+      setOtherExpenses(otherRows)
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -77,8 +80,8 @@ export function FinanceDashboardPage() {
   }, [load, dataVersion])
 
   const data: FinanceSummary | null = useMemo(
-    () => (orders ? buildFinanceSummary(orders, products, mappings) : null),
-    [orders, products, mappings],
+    () => (orders ? buildFinanceSummary(orders, products, mappings, otherExpenses) : null),
+    [orders, products, mappings, otherExpenses],
   )
 
   if (loading && !data) return <LoadingBlock label="正在汇总财务数据…" />
@@ -89,7 +92,7 @@ export function FinanceDashboardPage() {
     <div className="space-y-5">
       <PageHeader
         title="财务看板"
-        description={`盈亏 = 结算金额 − 成本 − 物流运费 + 补贴 − 其他费用（其他费用暂未接入，按 0 计算）`}
+        description="盈亏 = 结算金额 − 成本 − 物流运费 + 补贴 − 其他费用（保证金、仓储费、取回费、会员费等）"
         actions={
           <>
             <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -160,7 +163,7 @@ export function FinanceDashboardPage() {
           }
           icon={data.soldPnl >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
           tone={data.soldPnl >= 0 ? "success" : "danger"}
-          hint={`收入 ${formatCompact(data.soldIncome)} − 成本 ${formatCompact(data.soldCost)} − 运费 ${formatCompact(data.soldShipping)} + 补贴 ${formatCompact(data.soldRebate)}`}
+          hint={`收入 ${formatCompact(data.soldIncome)} − 成本 ${formatCompact(data.soldCost)} − 运费 ${formatCompact(data.soldShipping)} + 补贴 ${formatCompact(data.soldRebate)} − 其他费用 ${formatCompact(data.otherExpenseTotal)}`}
         />
       </div>
 
@@ -195,6 +198,13 @@ export function FinanceDashboardPage() {
             <p>
               已卖盈亏 <Pnl value={data.soldPnl} /> − 手里存货投入{" "}
               <span className="tabular-nums">{formatMoney(data.onhandInvestment)}</span>
+            </p>
+            <p>
+              其他费用 <span className="tabular-nums">{formatMoney(data.otherExpenseTotal)}</span>
+              {" · "}
+              <Link to="/other-expenses" className="underline">
+                去管理
+              </Link>
             </p>
             <p className="text-xs">
               手里 {data.onhandUnits} 件的货还在，投入先按支出扣；卖掉后按单件公式回正。

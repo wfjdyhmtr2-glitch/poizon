@@ -6,6 +6,7 @@ import {
 } from "./backend"
 import type {
   CloudConfig,
+  OtherExpense,
   Product,
   SpuInfo,
   ProductImage,
@@ -43,6 +44,23 @@ const SALES_SORT_MAP: Record<string, { column: string; ascending: boolean }> = {
   income_asc: { column: "expected_income", ascending: true },
   bid_desc: { column: "bid_amount", ascending: false },
   updated_desc: { column: "updated_at", ascending: false },
+}
+
+const OTHER_EXPENSE_COLUMNS =
+  "id,expense_date,category,platform,amount,note,created_at,updated_at"
+
+/** 其他费用行归一化：date 只留 YYYY-MM-DD，金额统一成数字 */
+function normalizeOtherExpense(row: Record<string, unknown>): OtherExpense {
+  return {
+    id: String(row.id),
+    expense_date: String(row.expense_date ?? "").slice(0, 10),
+    category: String(row.category ?? "其他") || "其他",
+    platform: row.platform ? String(row.platform) : null,
+    amount: Number(row.amount ?? 0),
+    note: row.note ? String(row.note) : null,
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+  }
 }
 
 /** 关键字里可能破坏 PostgREST 查询语法的字符，先剔除 */
@@ -522,6 +540,60 @@ export function createCloudBackend(config: CloudConfig): Backend {
       const { error: delError } = await client().from("purchase_orders").delete().in("id", ids)
       if (delError) throw new BackendError(translateDbError(delError.message))
       if (items?.length) await applyPurchaseToStock(client(), items as unknown as Record<string, unknown>[], -1)
+    },
+
+    /* ---------- 其他费用（不绑定商品，计入盈亏）---------- */
+
+    async listOtherExpenses() {
+      const { data, error } = await client()
+        .from("other_expenses")
+        .select(OTHER_EXPENSE_COLUMNS)
+        .order("expense_date", { ascending: false })
+        .order("created_at", { ascending: false })
+      if (error) throw new BackendError(translateDbError(error.message))
+      return (data ?? []).map((r) => normalizeOtherExpense(r as Record<string, unknown>))
+    },
+
+    async createOtherExpense(draft) {
+      const category = draft.category.trim()
+      if (!category) throw new BackendError("费用类别不能为空")
+      if (!Number.isFinite(draft.amount)) throw new BackendError("金额必须是数字")
+      const { data, error } = await client()
+        .from("other_expenses")
+        .insert({
+          expense_date: draft.expense_date,
+          category,
+          platform: draft.platform?.trim() || null,
+          amount: draft.amount,
+          note: draft.note?.trim() || null,
+        })
+        .select(OTHER_EXPENSE_COLUMNS)
+        .single()
+      if (error) throw new BackendError(translateDbError(error.message))
+      return normalizeOtherExpense(data as Record<string, unknown>)
+    },
+
+    async updateOtherExpense(id, draft) {
+      const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+      if (draft.expense_date !== undefined) patch.expense_date = draft.expense_date
+      if (draft.category !== undefined) patch.category = draft.category.trim() || "其他"
+      if (draft.platform !== undefined) patch.platform = draft.platform?.trim() || null
+      if (draft.amount !== undefined) patch.amount = draft.amount
+      if (draft.note !== undefined) patch.note = draft.note?.trim() || null
+      const { data, error } = await client()
+        .from("other_expenses")
+        .update(patch)
+        .eq("id", id)
+        .select(OTHER_EXPENSE_COLUMNS)
+        .single()
+      if (error) throw new BackendError(translateDbError(error.message))
+      return normalizeOtherExpense(data as Record<string, unknown>)
+    },
+
+    async deleteOtherExpenses(ids) {
+      if (!ids.length) return
+      const { error } = await client().from("other_expenses").delete().in("id", ids)
+      if (error) throw new BackendError(translateDbError(error.message))
     },
 
     supportsUpload: true,

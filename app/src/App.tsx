@@ -27,6 +27,9 @@ const FinanceDashboardPage = lazy(() =>
 const PurchasesPage = lazy(() =>
   import("@/pages/PurchasesPage").then((m) => ({ default: m.PurchasesPage })),
 )
+const OtherExpensesPage = lazy(() =>
+  import("@/pages/OtherExpensesPage").then((m) => ({ default: m.OtherExpensesPage })),
+)
 
 function Splash({ label = "正在准备工作台…" }: { label?: string }) {
   return (
@@ -88,6 +91,16 @@ function AppRoutes() {
           <Protected>
             <Suspense fallback={<PageFallback />}>
               <PurchasesPage />
+            </Suspense>
+          </Protected>
+        }
+      />
+      <Route
+        path="/other-expenses"
+        element={
+          <Protected>
+            <Suspense fallback={<PageFallback />}>
+              <OtherExpensesPage />
             </Suspense>
           </Protected>
         }

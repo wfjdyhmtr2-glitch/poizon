@@ -1,4 +1,4 @@
--- 云铺管家 · 增量升级脚本（可重复执行）
+-- 得物 · 增量升级脚本（可重复执行）
 
 -- 数据归属列提前建好（后面的触发器 / 函数会引用到）
 -- spu_info（商品信息登记）在此建表：迁移脚本后段的存量归属 update 依赖它
@@ -21,6 +21,24 @@ alter table if exists public.product_images        add column if not exists owne
 alter table if exists public.purchase_orders       add column if not exists owner_id uuid;
 alter table if exists public.purchase_order_items  add column if not exists owner_id uuid;
 alter table if exists public.spu_info               add column if not exists owner_id uuid;
+alter table if exists public.other_expenses         add column if not exists owner_id uuid;
+
+-- ---------- 其他费用（平台层面的支出，不绑定商品）----------
+-- 金额符号：正 = 支出，负 = 收回。充值保证金与取回保证金是两条独立记录。
+create table if not exists public.other_expenses (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid,
+  expense_date date not null default current_date,
+  category     text not null default '其他',
+  platform     text,
+  amount       numeric(12,2) not null default 0,
+  note         text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create index if not exists other_expenses_date_idx  on public.other_expenses (expense_date desc);
+create index if not exists other_expenses_owner_idx on public.other_expenses (owner_id);
 
 -- 1) 商品表补齐后来新增的字段
 alter table public.products
@@ -357,6 +375,7 @@ alter table public.spu_mappings         add column if not exists owner_id uuid;
 alter table public.product_images       add column if not exists owner_id uuid;
 alter table public.purchase_orders      add column if not exists owner_id uuid;
 alter table public.purchase_order_items add column if not exists owner_id uuid;
+alter table public.other_expenses       add column if not exists owner_id uuid;
 
 -- 存量数据归属管理员
 update public.products              set owner_id = (select id from auth.users where lower(email) = lower('shuo@dewu.com') limit 1) where owner_id is null;
@@ -394,6 +413,10 @@ create trigger purchase_order_items_set_owner before insert on public.purchase_o
 
 drop trigger if exists spu_info_set_owner on public.spu_info;
 create trigger spu_info_set_owner before insert on public.spu_info
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists other_expenses_set_owner on public.other_expenses;
+create trigger other_expenses_set_owner before insert on public.other_expenses
   for each row execute function public.set_owner_id();
 
 -- 策略：本人可见自己的数据，管理员可见全部
@@ -435,6 +458,12 @@ create policy "purchase_order_items_authenticated_all" on public.purchase_order_
 
 drop policy if exists "spu_info_authenticated_all" on public.spu_info;
 create policy "spu_info_authenticated_all" on public.spu_info
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "other_expenses_authenticated_all" on public.other_expenses;
+create policy "other_expenses_authenticated_all" on public.other_expenses
   for all to authenticated
   using (owner_id = auth.uid() or public.is_admin())
   with check (owner_id = auth.uid() or public.is_admin());

@@ -280,6 +280,39 @@ export interface PurchaseOrderDraft {
   items: Omit<PurchaseOrderItem, "id">[]
 }
 
+/**
+ * 其他费用：平台层面、摊不到具体商品上的支出
+ * （得物的取回费 / 仓储费 / 保证金，其他平台的会员费等），单独记账并计入盈亏。
+ *
+ * 金额符号约定：**正数 = 支出**（增加成本），**负数 = 收回 / 退回**（冲减成本）。
+ * 例：充值保证金记 +1000，日后取回保证金记 -1000，是两条独立记录，
+ * 这样「其他费用合计」天然是净额，直接作为盈亏减项。
+ *
+ * 暂不绑定商品（无 sku 字段），后续若要做按款摊派再扩展。
+ */
+export interface OtherExpense {
+  id: string
+  /** 发生日期 YYYY-MM-DD */
+  expense_date: string
+  /** 费用类别，如 保证金 / 仓储费 / 取回费 / 会员费 */
+  category: string
+  /** 关联平台，如 得物 / 淘宝；可为空 */
+  platform: string | null
+  /** 金额：正 = 支出，负 = 收回 */
+  amount: number
+  note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface OtherExpenseDraft {
+  expense_date: string
+  category: string
+  platform?: string | null
+  amount: number
+  note?: string | null
+}
+
 export interface StageSlice {
   stage: TradeStage
   label: string
