@@ -40,6 +40,7 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { useApp } from "@/contexts/AppContext"
 import { useTheme } from "@/hooks/useTheme"
+import { useDoubleClickCopy } from "@/hooks/useDoubleClickCopy"
 import { toast } from "sonner"
 
 const NAV_GROUPS: {
@@ -73,6 +74,8 @@ const NAV_GROUPS: {
 const FLAT_NAV = NAV_GROUPS.flatMap((group) => group.items)
 
 export function AppShell({ children }: { children: ReactNode }) {
+  // 全局能力：双击任意数据即复制
+  useDoubleClickCopy()
   const { user, signOut, isCloud, health, refreshHealth } = useApp()
   const { theme, toggle } = useTheme()
   const [mobileOpen, setMobileOpen] = useState(false)

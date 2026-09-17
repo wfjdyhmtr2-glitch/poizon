@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react"
+import { MousePointerClick } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -67,6 +68,20 @@ export function SettingsPage() {
           账号与偏好设置
         </p>
       </div>
+
+      {/* 使用技巧 */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-4 text-sm">
+          <span className="flex items-center gap-1.5 font-medium">
+            <MousePointerClick className="size-4 text-primary" />
+            小技巧
+          </span>
+          <span className="text-muted-foreground">
+            <b className="font-medium text-foreground">双击</b>页面上的任意数据（货号、金额、单号、规格…）即可自动复制到剪贴板
+          </span>
+          <span className="text-muted-foreground">输入框内双击仍是原生选词，不受影响</span>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* 云端连接 */}

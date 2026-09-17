@@ -198,6 +198,46 @@ async function main() {
     await sleep(400)
   }
 
+  /** 对页面上某段文字做**真实双击**（CDP 派发，clickCount=2），用于验证双击复制 */
+  async function doubleClickText(label, scope = "main") {
+    const box = await evaluate(`(() => {
+      const root = document.querySelector(${JSON.stringify(scope)}) ?? document.body;
+      const nodes = [...root.querySelectorAll('*')];
+      const el = nodes.find((e) => {
+        const t = (e.textContent || '').trim();
+        if (!t.includes(${JSON.stringify(label)})) return false;
+        return ![...e.children].some((c) => (c.textContent || '').trim().includes(${JSON.stringify(label)}));
+      });
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return null;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`)
+    if (!box) return false
+    for (const clickCount of [1, 2]) {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await s("Input.dispatchMouseEvent", {
+          type,
+          x: box.x,
+          y: box.y,
+          button: "left",
+          clickCount,
+        })
+      }
+    }
+    await sleep(700)
+    return true
+  }
+
+  /** 清掉提示条（toast），避免其文案污染后续页面断言 */
+  async function dismissToasts() {
+    await evaluate(`(() => {
+      document.querySelectorAll('[data-sonner-toast], [role="status"] li').forEach((el) => el.remove());
+      return true;
+    })()`)
+    await sleep(200)
+  }
+
   async function readValue(selector) {
     return evaluate(
       `document.querySelector(${JSON.stringify(selector)})?.value ?? null`,
@@ -218,6 +258,11 @@ async function main() {
 
   async function bodyText() {
     return evaluate("document.body.innerText.slice(0, 20000)")
+  }
+
+  /** 只读主内容区（排除 toast / 侧边栏等） */
+  async function mainText() {
+    return evaluate("(document.querySelector('main')?.innerText ?? document.body.innerText).slice(0, 20000)")
   }
 
   /**
@@ -317,10 +362,21 @@ async function main() {
   console.log("  不支持编辑（无新增按钮）:", !productText.includes("新增商品"))
   await shot("03-products-desktop")
 
+  console.log("\n=== 3b. 双击数据自动复制 ===")
+  console.log("  双击商品名:", await doubleClickText("精梳棉基础款圆领T恤"))
+  const afterCopy = await bodyText()
+  console.log("  出现复制提示:", afterCopy.includes("已复制"))
+  const clip = await evaluate(`(async () => {
+    try { return await navigator.clipboard.readText(); } catch (e) { return "读不到：" + e.message; }
+  })()`)
+  console.log("  剪贴板内容:", (clip ?? "(空)").toString().slice(0, 40))
+  await shot("03b-copy-toast")
+  await dismissToasts()
+
   console.log("\n=== 4. 搜索过滤 ===")
   await typeInto('input[placeholder^="搜索商品名称"]', "羽绒")
   await sleep(1200)
-  const searchText = await bodyText()
+  const searchText = await mainText()
   console.log("  搜索结果含羽绒服:", searchText.includes("羽绒服"))
   console.log("  已过滤掉T恤:", !searchText.includes("精梳棉基础款圆领T恤"))
   await shot("04-products-search")
