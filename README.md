@@ -53,7 +53,7 @@
 前置：**Node.js 22**（建议用 managed 版本或 nvm）。
 
 ```bash
-git clone <仓库地址> yunguan && cd yunguan/app
+git clone https://github.com/wfjdyhmtr2-glitch/poizon.git yunguan && cd yunguan/app
 npm install
 npm run dev            # 本地开发，默认 http://localhost:5173
 ```
@@ -121,7 +121,7 @@ node scripts/release.mjs   # 生成/刷新 publish/ 目录（只保留 index.htm
 
 1. 仓库 **Settings → Pages** → Source 选 **GitHub Actions**
 2. 之后每次 `git push`（或在本仓库 Actions 页点一次 Run workflow）都会自动上线
-3. 固定网址：`https://<用户名>.github.io/<仓库名>/`
+3. 固定网址：`https://wfjdyhmtr2-glitch.github.io/poizon/`（仓库现名 `poizon`，原名为 `-`；改名后旧地址会自动跳转）
 4. **换自己的域名**：Settings → Pages → Custom domain 填你的域名 →
    在 DNS 服务商加一条 CNAME 指向 `<用户名>.github.io` → 勾选 Enforce HTTPS
 
