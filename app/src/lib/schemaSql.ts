@@ -1,0 +1,782 @@
+/**
+ * 库存联动：可用库存放 products.stock，被占用的放 products.locked_stock。
+ * 规则全部落在数据库里，无论是界面、导入还是直接在表编辑器改数据都能保持一致：
+ *   订单生效（交易成功未退货） → 从可用挪 1 个到锁定
+ *   订单黄了（未付款 / 退款）   → 锁定的 1 个退回可用
+ *   订单结算成功               → 锁定释放，但不再退回可用（等于真扣减 1 个）
+ * 订单通过 resolved_sku 关联商品：优先直接匹配 SPUID，否则查 SPU 对照表。
+ */
+const STOCK_SYNC_SQL = `-- ---------- SPU 对照表（平台 spuID ↔ 本店 SPUID）----------
+create table if not exists public.spu_mappings (
+  id          uuid primary key default gen_random_uuid(),
+  owner_id    uuid,
+  external_id text not null unique,
+  sku         text not null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists spu_mappings_sku_idx on public.spu_mappings (sku);
+
+alter table public.spu_mappings enable row level security;
+drop policy if exists "spu_mappings_authenticated_all" on public.spu_mappings;
+create policy "spu_mappings_authenticated_all" on public.spu_mappings
+  for all to authenticated using (true) with check (true);
+
+-- ---------- 库存联动 ----------
+alter table public.products
+  add column if not exists locked_stock integer not null default 0;
+alter table public.sales_orders
+  add column if not exists resolved_sku text;
+
+comment on column public.products.locked_stock is '被「生效但未结算」的订单锁定的数量，由 sales_orders 触发器维护';
+comment on column public.sales_orders.resolved_sku is '按「直接匹配 SPUID → SPU 对照表」解析出的商品 SPUID，解析不到为 null';
+
+-- 解析：订单里的 spuID 先直接匹配商品表，匹配不到再查对照表
+create or replace function public.resolve_order_sku(p_sku text)
+returns text language sql stable as $$
+  select case
+    when p_sku is null or p_sku = '' then null
+    when exists (
+      select 1 from public.products pr
+      where pr.sku = p_sku and pr.owner_id = auth.uid()
+    ) then p_sku
+    else (
+      select m.sku from public.spu_mappings m
+      where m.external_id = p_sku and m.owner_id = auth.uid() limit 1
+    )
+  end;
+$$;
+
+create or replace function public.order_stock_effect(
+  p_status text, p_returned boolean, p_settled boolean
+) returns text language sql immutable as $$
+  select case
+    when p_status = '交易成功' and not coalesce(p_returned, false)
+         and coalesce(p_settled, false) then 'consumed'
+    when p_status = '交易成功' and not coalesce(p_returned, false) then 'locked'
+    else 'released'
+  end;
+$$;
+
+create or replace function public.apply_stock_delta(
+  p_sku text, p_effect text, p_sign integer
+) returns void language plpgsql as $$
+declare
+  d_locked integer := 0;
+  d_stock  integer := 0;
+begin
+  if p_effect is null or p_sku is null or p_sku = '' then
+    return;
+  end if;
+
+  if p_effect = 'locked' then
+    d_locked := 1; d_stock := -1;
+  elsif p_effect = 'consumed' then
+    d_stock := -1;
+  else
+    return;
+  end if;
+
+  update public.products
+     set locked_stock = greatest(0, locked_stock + d_locked * p_sign),
+         stock        = stock + d_stock * p_sign,
+         updated_at   = now()
+   where sku = p_sku and owner_id = auth.uid();
+end;
+$$;
+
+-- 写订单前先解析 spuID → 商品 SPUID
+create or replace function public.resolve_sku_on_order()
+returns trigger language plpgsql as $$
+begin
+  new.resolved_sku := public.resolve_order_sku(new.sku);
+  return new;
+end;
+$$;
+
+create or replace function public.sync_stock_from_order()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    perform public.apply_stock_delta(
+      old.resolved_sku,
+      public.order_stock_effect(old.order_status, old.is_returned, old.is_settled),
+      -1);
+    return null;
+  end if;
+
+  if tg_op = 'UPDATE' then
+    if old.resolved_sku is distinct from new.resolved_sku then
+      perform public.apply_stock_delta(
+        old.resolved_sku,
+        public.order_stock_effect(old.order_status, old.is_returned, old.is_settled),
+        -1);
+    end if;
+  end if;
+
+  perform public.apply_stock_delta(
+    new.resolved_sku,
+    public.order_stock_effect(new.order_status, new.is_returned, new.is_settled),
+    1);
+  return null;
+end;
+$$;
+
+-- 让某外部 spuID 名下的订单全部重新解析一遍（对照表变动时调用）
+create or replace function public.refresh_orders_for_external(p_external text)
+returns void language plpgsql as $$
+begin
+  if p_external is null or p_external = '' then return; end if;
+  -- 自赋值触发 BEFORE 解析触发器重算 resolved_sku，再由 AFTER 触发器按差额调整库存
+  update public.sales_orders set sku = sku where sku = p_external and owner_id = auth.uid();
+end;
+$$;
+
+drop trigger if exists sales_orders_resolve_sku on public.sales_orders;
+create trigger sales_orders_resolve_sku
+  before insert or update on public.sales_orders
+  for each row execute function public.resolve_sku_on_order();
+
+drop trigger if exists sales_orders_sync_stock on public.sales_orders;
+create trigger sales_orders_sync_stock
+  after insert or update or delete on public.sales_orders
+  for each row execute function public.sync_stock_from_order();
+
+-- 对照表变动 → 受影响订单重新解析、库存随之调整
+create or replace function public.refresh_orders_for_external_mapping()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    perform public.refresh_orders_for_external(old.external_id);
+  elsif tg_op = 'UPDATE' and old.external_id is distinct from new.external_id then
+    perform public.refresh_orders_for_external(old.external_id);
+    perform public.refresh_orders_for_external(new.external_id);
+  else
+    perform public.refresh_orders_for_external(new.external_id);
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists spu_mappings_refresh_stock on public.spu_mappings;
+create trigger spu_mappings_refresh_stock
+  after insert or update or delete on public.spu_mappings
+  for each row execute function public.refresh_orders_for_external_mapping();
+
+-- 新建 / 改名的商品可能让之前「解析不到」的订单突然匹配上
+create or replace function public.refresh_orders_for_product()
+returns trigger language plpgsql as $$
+begin
+  perform public.refresh_orders_for_external(new.sku);
+  return null;
+end;
+$$;
+
+drop trigger if exists products_refresh_orders on public.products;
+create trigger products_refresh_orders
+  after insert or update of sku on public.products
+  for each row execute function public.refresh_orders_for_product();
+
+-- 存量订单补解析（列刚加上时 resolved_sku 全为 null，重算后会自动锁定该锁的库存）
+update public.sales_orders set sku = sku where resolved_sku is null and owner_id = auth.uid();`
+
+/**
+ * 访问控制（两层）：
+ * 1. 每行数据归属创建者（owner_id），普通账号只能看到自己的数据；
+ * 2. 管理员账号（ADMIN_EMAIL）可以看到并管理所有人的数据。
+ * 数据库层是真正防线，前端不做权限判断。
+ */
+const ADMIN_EMAIL = 'shuo@dewu.com'
+
+const ACCESS_CONTROL_SQL = `
+-- ---------- 访问控制与数据隔离 ----------
+
+-- 管理员判定：比对企业邮箱
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+  select lower(coalesce(auth.jwt() ->> 'email', '')) = lower('${ADMIN_EMAIL}')
+$$;
+
+-- 数据归属：写入时自动打上创建者，存量数据归管理员
+create or replace function public.set_owner_id()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.owner_id := coalesce(new.owner_id, auth.uid());
+  return new;
+end;
+$$;
+
+-- 每张业务表加 owner_id
+alter table public.products             add column if not exists owner_id uuid;
+alter table public.sales_orders         add column if not exists owner_id uuid;
+alter table public.spu_mappings         add column if not exists owner_id uuid;
+alter table public.product_images       add column if not exists owner_id uuid;
+alter table public.purchase_orders      add column if not exists owner_id uuid;
+alter table public.purchase_order_items add column if not exists owner_id uuid;
+
+-- 存量数据归属管理员
+update public.products              set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.sales_orders          set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.spu_mappings          set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.product_images        set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.purchase_orders       set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.purchase_order_items  set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+update public.spu_info              set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
+
+-- 写入时自动打归属
+drop trigger if exists products_set_owner on public.products;
+create trigger products_set_owner before insert on public.products
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists sales_orders_set_owner on public.sales_orders;
+create trigger sales_orders_set_owner before insert on public.sales_orders
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists spu_mappings_set_owner on public.spu_mappings;
+create trigger spu_mappings_set_owner before insert on public.spu_mappings
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists product_images_set_owner on public.product_images;
+create trigger product_images_set_owner before insert on public.product_images
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists purchase_orders_set_owner on public.purchase_orders;
+create trigger purchase_orders_set_owner before insert on public.purchase_orders
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists purchase_order_items_set_owner on public.purchase_order_items;
+create trigger purchase_order_items_set_owner before insert on public.purchase_order_items
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists spu_info_set_owner on public.spu_info;
+create trigger spu_info_set_owner before insert on public.spu_info
+  for each row execute function public.set_owner_id();
+
+-- 策略：本人可见自己的数据，管理员可见全部
+drop policy if exists "products_authenticated_all" on public.products;
+create policy "products_authenticated_all" on public.products
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "sales_orders_authenticated_all" on public.sales_orders;
+create policy "sales_orders_authenticated_all" on public.sales_orders
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "spu_mappings_authenticated_all" on public.spu_mappings;
+create policy "spu_mappings_authenticated_all" on public.spu_mappings
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "product_images_authenticated_all" on public.product_images;
+create policy "product_images_authenticated_all" on public.product_images
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "purchase_orders_authenticated_all" on public.purchase_orders;
+create policy "purchase_orders_authenticated_all" on public.purchase_orders
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "purchase_order_items_authenticated_all" on public.purchase_order_items;
+create policy "purchase_order_items_authenticated_all" on public.purchase_order_items
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "spu_info_authenticated_all" on public.spu_info;
+create policy "spu_info_authenticated_all" on public.spu_info
+  for all to authenticated
+  using (owner_id = auth.uid() or public.is_admin())
+  with check (owner_id = auth.uid() or public.is_admin());
+
+-- 匿名一律不可见
+drop policy if exists "products_anon_read_on_sale" on public.products;
+
+-- 图片桶：公开读保持（图片链接要能显示），登录用户可上传自己的图
+drop policy if exists "product_images_auth_insert" on storage.objects;
+create policy "product_images_auth_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'product-images');
+
+drop policy if exists "product_images_auth_update" on storage.objects;
+create policy "product_images_auth_update" on storage.objects
+  for update to authenticated
+  using (bucket_id = 'product-images');
+
+drop policy if exists "product_images_auth_delete" on storage.objects;
+create policy "product_images_auth_delete" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'product-images');
+`
+
+export const SCHEMA_SQL = `-- ============================================================
+-- 云铺管家 · 店铺商品管理系统 数据库初始化 / 升级脚本
+-- 在 Supabase 控制台 → SQL Editor 中整体粘贴执行即可
+-- 可重复执行：已有项目重跑一次会自动补齐新增字段
+-- ============================================================
+
+create extension if not exists "pgcrypto";
+
+-- 数据归属列提前建好（后面的触发器 / 函数会引用到）
+-- spu_info（商品信息登记）在此建表：迁移脚本后段的存量归属 update 依赖它
+create table if not exists public.spu_info (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  sku        text not null,
+  name       text not null default '',
+  image_url  text not null default '',
+  price      numeric(12,2),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists spu_info_owner_sku_key on public.spu_info (owner_id, sku);
+
+alter table if exists public.products              add column if not exists owner_id uuid;
+alter table if exists public.sales_orders          add column if not exists owner_id uuid;
+alter table if exists public.spu_mappings          add column if not exists owner_id uuid;
+alter table if exists public.product_images        add column if not exists owner_id uuid;
+alter table if exists public.purchase_orders       add column if not exists owner_id uuid;
+alter table if exists public.purchase_order_items  add column if not exists owner_id uuid;
+alter table if exists public.spu_info               add column if not exists owner_id uuid;
+
+
+-- ---------- 商品表 ----------
+create table if not exists public.products (
+  id                uuid primary key default gen_random_uuid(),
+  owner_id          uuid,
+  name              text not null,
+  sku               text not null unique,
+  purchase_platform text,
+  category          text not null default '',
+  brand             text,
+  gender            text,
+  seasons           text[] not null default '{}',
+  colors            text[] not null default '{}',
+  sizes             text[] not null default '{}',
+  material          text,
+  price             numeric(12,2) not null default 0,
+  net_price         numeric(12,2),
+  platform_fee      numeric(12,2),
+  shipping_fee      numeric(12,2),
+  cost_price        numeric(12,2),
+  stock             integer not null default 0,
+  locked_stock      integer not null default 0,
+  stock_alert       integer not null default 5,
+  rebate            numeric(12,2),
+  remark            text,
+  status            text not null default 'on_sale'
+                    check (status in ('on_sale','off_shelf','draft')),
+  is_new            boolean not null default false,
+  cover_url         text,
+  images            text[] not null default '{}',
+  description       text,
+  tags              text[] not null default '{}',
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+-- ---------- 字段升级（老项目重跑本脚本即可补齐）----------
+alter table public.products
+  add column if not exists purchase_platform text,
+  add column if not exists net_price         numeric(12,2),
+  add column if not exists platform_fee      numeric(12,2),
+  add column if not exists shipping_fee      numeric(12,2),
+  add column if not exists rebate            numeric(12,2),
+  add column if not exists remark            text,
+  add column if not exists locked_stock      integer not null default 0;
+
+create index if not exists products_category_idx on public.products (category);
+create index if not exists products_status_idx   on public.products (status);
+create index if not exists products_platform_idx on public.products (purchase_platform);
+create index if not exists products_updated_idx  on public.products (updated_at desc);
+create index if not exists products_created_idx  on public.products (created_at desc);
+
+-- ---------- updated_at 自动维护 ----------
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists products_touch_updated_at on public.products;
+create trigger products_touch_updated_at
+  before update on public.products
+  for each row execute function public.touch_updated_at();
+
+-- ---------- 行级安全（RLS）----------
+alter table public.products enable row level security;
+
+drop policy if exists "products_authenticated_all" on public.products;
+create policy "products_authenticated_all" on public.products
+  for all to authenticated using (true) with check (true);
+
+-- 游客只读在售商品（可用于后续做前台展示，不需要可删掉这段）
+drop policy if exists "products_anon_read_on_sale" on public.products;
+create policy "products_anon_read_on_sale" on public.products
+  for select to anon using (status = 'on_sale');
+
+-- ============================================================
+-- 销售订单表
+-- ============================================================
+create table if not exists public.sales_orders (
+  id              uuid primary key default gen_random_uuid(),
+  owner_id        uuid,
+  order_no        text not null unique,
+  sku             text not null default '',
+  spec            text,
+  order_status    text not null default '交易成功',
+  is_returned     boolean not null default false,
+  is_settled      boolean not null default false,
+  bid_amount      numeric(12,2),
+  expected_income numeric(12,2),
+  after_sales     text,
+  paid_at         timestamptz,
+  -- 交易阶段由「订单状态 + 是否退货」派生，规则固化在数据库里：
+  --   交易失败                     → 买家未付款
+  --   交易关闭成功                 → 买家在平台发货前退款
+  --   交易成功 + 是否退货 = true   → 买家收到货后退款
+  --   交易成功 + 是否退货 = false  → 正常成交
+  trade_stage     text generated always as (
+                    case
+                      when order_status = '交易失败'     then 'unpaid'
+                      when order_status = '交易关闭成功' then 'refund_before_ship'
+                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
+                      when order_status = '交易成功'     then 'completed'
+                      else 'unknown'
+                    end
+                  ) stored,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create index if not exists sales_orders_sku_idx    on public.sales_orders (sku);
+create index if not exists sales_orders_stage_idx  on public.sales_orders (trade_stage);
+create index if not exists sales_orders_settle_idx on public.sales_orders (is_settled);
+create index if not exists sales_orders_paid_idx   on public.sales_orders (paid_at desc);
+
+drop trigger if exists sales_orders_touch_updated_at on public.sales_orders;
+create trigger sales_orders_touch_updated_at
+  before update on public.sales_orders
+  for each row execute function public.touch_updated_at();
+
+alter table public.sales_orders enable row level security;
+
+drop policy if exists "sales_orders_authenticated_all" on public.sales_orders;
+create policy "sales_orders_authenticated_all" on public.sales_orders
+  for all to authenticated using (true) with check (true);
+
+-- 注意：销售数据比商品数据敏感，这里刻意不给 anon 开放任何读取权限
+
+${STOCK_SYNC_SQL}
+
+-- ---------- 入仓单（采购订单维度：一单买了哪些款）----------
+create table if not exists public.purchase_orders (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid,
+  order_no     text not null unique,
+  platform     text,
+  purchased_at date,
+  shipping_fee numeric(12,2),
+  remark       text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create table if not exists public.purchase_order_items (
+  id                uuid primary key default gen_random_uuid(),
+  owner_id          uuid,
+  purchase_order_id uuid not null references public.purchase_orders on delete cascade,
+  sku               text not null,
+  name              text,
+  price             numeric(12,2),
+  color             text not null default '',
+  size              text not null default '',
+  quantity          integer not null default 0,
+  unit_cost         numeric(12,2),
+  created_at        timestamptz not null default now()
+);
+
+create index if not exists purchase_order_items_po_idx  on public.purchase_order_items (purchase_order_id);
+create index if not exists purchase_order_items_sku_idx on public.purchase_order_items (sku);
+
+alter table public.purchase_orders enable row level security;
+drop policy if exists "purchase_orders_authenticated_all" on public.purchase_orders;
+create policy "purchase_orders_authenticated_all" on public.purchase_orders
+  for all to authenticated using (true) with check (true);
+
+alter table public.purchase_order_items enable row level security;
+drop policy if exists "purchase_order_items_authenticated_all" on public.purchase_order_items;
+create policy "purchase_order_items_authenticated_all" on public.purchase_order_items
+  for all to authenticated using (true) with check (true);
+
+-- ---------- 图片库（独立模块，按 SPUID / 颜色匹配）----------
+create table if not exists public.product_images (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  sku        text not null,
+  color      text not null default '',
+  url        text not null,
+  sort       integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists product_images_sku_idx   on public.product_images (sku);
+create index if not exists product_images_color_idx on public.product_images (sku, color);
+
+-- ---------- 商品信息（SPUID → 名称 / 图片 / 售价）----------
+create table if not exists public.spu_info (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  sku        text not null,
+  name       text not null default '',
+  image_url  text not null default '',
+  price      numeric(12,2),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists spu_info_owner_sku_key on public.spu_info (owner_id, sku);
+
+alter table public.product_images enable row level security;
+drop policy if exists "product_images_authenticated_all" on public.product_images;
+create policy "product_images_authenticated_all" on public.product_images
+  for all to authenticated using (true) with check (true);
+
+-- ---------- 图片存储桶 ----------
+insert into storage.buckets (id, name, public)
+values ('product-images', 'product-images', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "product_images_public_read" on storage.objects;
+create policy "product_images_public_read" on storage.objects
+  for select to public using (bucket_id = 'product-images');
+
+drop policy if exists "product_images_auth_insert" on storage.objects;
+create policy "product_images_auth_insert" on storage.objects
+  for insert to authenticated with check (bucket_id = 'product-images');
+
+drop policy if exists "product_images_auth_update" on storage.objects;
+create policy "product_images_auth_update" on storage.objects
+  for update to authenticated using (bucket_id = 'product-images');
+
+drop policy if exists "product_images_auth_delete" on storage.objects;
+create policy "product_images_auth_delete" on storage.objects
+  for delete to authenticated using (bucket_id = 'product-images');
+
+-- ---------- 可选：几条示例数据 ----------
+insert into public.products
+  (name, sku, purchase_platform, category, brand, gender, seasons, colors, sizes, material,
+   price, net_price, platform_fee, cost_price, stock, stock_alert, rebate, remark,
+   status, is_new, tags, description)
+values
+  ('精梳棉基础款圆领T恤','DEMO-TS-1001','1688','T恤','云织','中性','{春季,夏季}','{白色,黑色,灰色}','{S,M,L,XL}','纯棉',
+   129,119,6.45,52,486,60,2.58,'档口现货，48 小时内发货','on_sale',false,'{基础款,热销}','示例数据，可直接删除'),
+  ('法式泡泡袖雪纺衬衫','DEMO-SH-2001','淘宝','衬衫','蔓辞','女装','{春季,秋季}','{白色,米色,粉色}','{S,M,L}','涤纶',
+   259,239,12.95,108,132,30,null,null,'on_sale',true,'{法式,通勤}','示例数据，可直接删除')
+on conflict (sku) do nothing;
+
+${ACCESS_CONTROL_SQL}
+`
+
+/** 只补新增结构、不动数据的增量脚本，方便老项目快速升级 */
+export const MIGRATION_SQL = `-- 云铺管家 · 增量升级脚本（可重复执行）
+
+-- 数据归属列提前建好（后面的触发器 / 函数会引用到）
+-- spu_info（商品信息登记）在此建表：迁移脚本后段的存量归属 update 依赖它
+create table if not exists public.spu_info (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  sku        text not null,
+  name       text not null default '',
+  image_url  text not null default '',
+  price      numeric(12,2),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists spu_info_owner_sku_key on public.spu_info (owner_id, sku);
+
+alter table if exists public.products              add column if not exists owner_id uuid;
+alter table if exists public.sales_orders          add column if not exists owner_id uuid;
+alter table if exists public.spu_mappings          add column if not exists owner_id uuid;
+alter table if exists public.product_images        add column if not exists owner_id uuid;
+alter table if exists public.purchase_orders       add column if not exists owner_id uuid;
+alter table if exists public.purchase_order_items  add column if not exists owner_id uuid;
+alter table if exists public.spu_info               add column if not exists owner_id uuid;
+
+-- 1) 商品表补齐后来新增的字段
+alter table public.products
+  add column if not exists purchase_platform text,
+  add column if not exists net_price         numeric(12,2),
+  add column if not exists platform_fee      numeric(12,2),
+  add column if not exists shipping_fee      numeric(12,2),
+  add column if not exists rebate            numeric(12,2),
+  add column if not exists remark            text,
+  add column if not exists locked_stock      integer not null default 0;
+
+create index if not exists products_platform_idx on public.products (purchase_platform);
+
+-- 1b) 图片库（独立模块，按 SPUID / 颜色匹配）
+create table if not exists public.product_images (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  sku        text not null,
+  color      text not null default '',
+  url        text not null,
+  sort       integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists product_images_sku_idx   on public.product_images (sku);
+create index if not exists product_images_color_idx on public.product_images (sku, color);
+
+alter table public.product_images enable row level security;
+drop policy if exists "product_images_authenticated_all" on public.product_images;
+create policy "product_images_authenticated_all" on public.product_images
+  for all to authenticated using (true) with check (true);
+
+-- 1c) 入仓单（采购订单维度）
+create table if not exists public.purchase_orders (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid,
+  order_no     text not null unique,
+  platform     text,
+  purchased_at date,
+  shipping_fee numeric(12,2),
+  remark       text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create table if not exists public.purchase_order_items (
+  id                uuid primary key default gen_random_uuid(),
+  owner_id          uuid,
+  purchase_order_id uuid not null references public.purchase_orders on delete cascade,
+  sku               text not null,
+  name              text,
+  price             numeric(12,2),
+  color             text not null default '',
+  size              text not null default '',
+  quantity          integer not null default 0,
+  unit_cost         numeric(12,2),
+  created_at        timestamptz not null default now()
+);
+
+create index if not exists purchase_order_items_po_idx  on public.purchase_order_items (purchase_order_id);
+create index if not exists purchase_order_items_sku_idx on public.purchase_order_items (sku);
+
+alter table public.purchase_order_items
+  add column if not exists name  text,
+  add column if not exists price numeric(12,2);
+
+alter table public.purchase_orders enable row level security;
+drop policy if exists "purchase_orders_authenticated_all" on public.purchase_orders;
+create policy "purchase_orders_authenticated_all" on public.purchase_orders
+  for all to authenticated using (true) with check (true);
+
+alter table public.purchase_order_items enable row level security;
+drop policy if exists "purchase_order_items_authenticated_all" on public.purchase_order_items;
+create policy "purchase_order_items_authenticated_all" on public.purchase_order_items
+  for all to authenticated using (true) with check (true);
+
+-- 2) 新增销售订单表
+--    先确保 updated_at 触发器函数存在（老库一般已有，这里做幂等兜底）
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create table if not exists public.sales_orders (
+  id              uuid primary key default gen_random_uuid(),
+  owner_id        uuid,
+  order_no        text not null unique,
+  sku             text not null default '',
+  spec            text,
+  order_status    text not null default '交易成功',
+  is_returned     boolean not null default false,
+  is_settled      boolean not null default false,
+  bid_amount      numeric(12,2),
+  expected_income numeric(12,2),
+  after_sales     text,
+  paid_at         timestamptz,
+  trade_stage     text generated always as (
+                    case
+                      when order_status = '交易失败'     then 'unpaid'
+                      when order_status = '交易关闭成功' then 'refund_before_ship'
+                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
+                      when order_status = '交易成功'     then 'completed'
+                      else 'unknown'
+                    end
+                  ) stored,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create index if not exists sales_orders_sku_idx    on public.sales_orders (sku);
+create index if not exists sales_orders_stage_idx  on public.sales_orders (trade_stage);
+create index if not exists sales_orders_settle_idx on public.sales_orders (is_settled);
+create index if not exists sales_orders_paid_idx   on public.sales_orders (paid_at desc);
+
+drop trigger if exists sales_orders_touch_updated_at on public.sales_orders;
+create trigger sales_orders_touch_updated_at
+  before update on public.sales_orders
+  for each row execute function public.touch_updated_at();
+
+alter table public.sales_orders enable row level security;
+
+drop policy if exists "sales_orders_authenticated_all" on public.sales_orders;
+create policy "sales_orders_authenticated_all" on public.sales_orders
+  for all to authenticated using (true) with check (true);
+
+-- 3) 库存联动：让订单自动占用 / 返回 / 核销商品库存
+${STOCK_SYNC_SQL}
+
+-- 4) 访问控制：仅限管理员账号
+${ACCESS_CONTROL_SQL}
+
+-- 5) 让 PostgREST 立刻感知新表与新字段
+notify pgrst, 'reload schema';
+`
+
+export const SETUP_STEPS: { title: string; detail: string }[] = [
+  {
+    title: "注册 / 登录 Supabase",
+    detail: "打开 supabase.com 新建一个免费项目（Project），区域建议选 Singapore 或 Tokyo，国内访问更稳。",
+  },
+  {
+    title: "执行初始化 SQL",
+    detail:
+      "进入项目左侧 SQL Editor，新建 Query，把下面的脚本整体粘贴后点 Run。会建好 products 表、索引、权限策略和 product-images 存储桶。脚本可重复执行，老项目重跑一次会自动补齐后来新增的字段。",
+  },
+  {
+    title: "开启邮箱登录",
+    detail:
+      "Authentication → Sign In / Providers 确认 Email 已启用；想省掉邮箱验证，可在同一页关闭 Confirm email。",
+  },
+  {
+    title: "创建一个后台账号",
+    detail:
+      "注意：登录本后台用的不是 Supabase 官网账号，两套账号互不相通。请到 Authentication → Users → Add user → Create new user，自己填邮箱和密码，务必勾选 Auto Confirm User（不勾就得去邮箱点确认链接才能登录）。",
+  },
+  {
+    title: "把地址和密钥填进来",
+    detail:
+      "Project Settings → API Keys 里复制 Project URL 和 anon public key，粘贴到本弹窗下方保存即可。这一格只填密钥字符串，别把上面的 SQL 粘进来。",
+  },
+]

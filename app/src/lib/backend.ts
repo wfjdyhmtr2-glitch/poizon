@@ -1,0 +1,129 @@
+import type {
+  Product,
+  ProductDraft,
+  ProductImage,
+  ProductImageDraft,
+  ProductListResult,
+  SpuInfo,
+  SpuInfoDraft,
+  ProductQuery,
+  ProductStatus,
+  PurchaseOrder,
+  PurchaseOrderDraft,
+  SalesListResult,
+  SalesOrder,
+  SalesOrderDraft,
+  SalesOrderQuery,
+  SpuMapping,
+  SpuMappingDraft,
+} from "./types"
+
+export interface AuthUser {
+  id: string
+  email: string
+}
+
+export interface Backend {
+  kind: "cloud" | "demo"
+  label: string
+  storageLabel: string
+
+  /* ---------- 认证 ---------- */
+  getSession(): Promise<AuthUser | null>
+  onAuthChange(cb: (user: AuthUser | null) => void): () => void
+  signIn(email: string, password: string): Promise<void>
+  signUp(email: string, password: string): Promise<{ needsConfirm: boolean }>
+  signOut(): Promise<void>
+
+  /* ---------- 数据 ---------- */
+  listProducts(query: ProductQuery): Promise<ProductListResult>
+  fetchForDashboard(): Promise<Product[]>
+  getProduct(id: string): Promise<Product | null>
+  createProduct(draft: ProductDraft): Promise<Product>
+  updateProduct(id: string, draft: Partial<ProductDraft>): Promise<Product>
+  deleteProducts(ids: string[]): Promise<void>
+  bulkSetStatus(ids: string[], status: ProductStatus): Promise<void>
+  importProducts(
+    drafts: ProductDraft[],
+    mode: "insert" | "upsert",
+  ): Promise<{ inserted: number; updated: number; failed: number }>
+
+  /* ---------- 销售订单 ---------- */
+  listSalesOrders(query: SalesOrderQuery): Promise<SalesListResult>
+  fetchSalesForDashboard(): Promise<SalesOrder[]>
+  getSalesOrder(id: string): Promise<SalesOrder | null>
+  createSalesOrder(draft: SalesOrderDraft): Promise<SalesOrder>
+  updateSalesOrder(id: string, draft: Partial<SalesOrderDraft>): Promise<SalesOrder>
+  deleteSalesOrders(ids: string[]): Promise<void>
+  bulkSetSettled(ids: string[], settled: boolean): Promise<void>
+  importSalesOrders(
+    drafts: SalesOrderDraft[],
+    mode: "insert" | "upsert",
+  ): Promise<{ inserted: number; updated: number; failed: number }>
+
+  /* ---------- SPU 对照（平台 spuID ↔ 本店 SPUID）---------- */
+  listSpuMappings(): Promise<SpuMapping[]>
+  saveSpuMapping(draft: SpuMappingDraft): Promise<SpuMapping>
+  deleteSpuMappings(ids: string[]): Promise<void>
+  /** 拉某商品（含通过对照映射过来的外部 spuID）名下的全部订单，用于规格占用明细 */
+  listSalesOrdersBySku(sku: string): Promise<SalesOrder[]>
+
+  /* ---------- 图片库（按 SPUID / 颜色匹配）---------- */
+  listProductImages(query?: { sku?: string; color?: string }): Promise<ProductImage[]>
+  addProductImage(draft: ProductImageDraft): Promise<ProductImage>
+  deleteProductImages(ids: string[]): Promise<void>
+
+  /* ---------- 商品信息（SPUID → 名称/图片/售价）---------- */
+  listSpuInfo(): Promise<SpuInfo[]>
+  upsertSpuInfo(draft: SpuInfoDraft): Promise<SpuInfo>
+
+  /* ---------- 入仓单（采购订单维度）---------- */
+  listPurchaseOrders(): Promise<PurchaseOrder[]>
+  /** 创建并确认入仓：明细数量加入商品库存，成本价按加权平均更新 */
+  createPurchaseOrder(draft: PurchaseOrderDraft): Promise<PurchaseOrder>
+  /** 删除入仓单并把对应数量从库存回退（成本价保持不变） */
+  deletePurchaseOrders(ids: string[]): Promise<void>
+  /** 删除某款下的一个规格（二级单元）：清掉对应采购明细并把数量从库存回退 */
+  deletePurchaseOrderSpec(
+    sku: string,
+    color: string,
+    size: string,
+  ): Promise<{ removedQty: number }>
+
+  /* ---------- 文件 ---------- */
+  supportsUpload: boolean
+  uploadImage(file: File): Promise<string>
+  deleteImage(url: string): Promise<void>
+
+  /* ---------- 健康检查 ---------- */
+  checkHealth(): Promise<{ ok: boolean; message: string }>
+}
+
+export class BackendError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BackendError"
+  }
+}
+
+export const SORT_MAP: Record<string, { column: string; ascending: boolean }> = {
+  updated_desc: { column: "updated_at", ascending: false },
+  created_desc: { column: "created_at", ascending: false },
+  price_desc: { column: "price", ascending: false },
+  price_asc: { column: "price", ascending: true },
+  stock_asc: { column: "stock", ascending: true },
+  stock_desc: { column: "stock", ascending: false },
+  name_asc: { column: "name", ascending: true },
+}
+
+export function sortRows(rows: Product[], sort: string): Product[] {
+  const spec = SORT_MAP[sort] ?? SORT_MAP.updated_desc
+  const key = spec.column as keyof Product
+  const dir = spec.ascending ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const av = a[key]
+    const bv = b[key]
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir
+    return String(av ?? "").localeCompare(String(bv ?? ""), "zh-CN") * dir
+  })
+}
