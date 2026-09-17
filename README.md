@@ -106,6 +106,43 @@ node scripts/release.mjs   # 生成/刷新 publish/ 目录（只保留 index.htm
 > 托管方只是"发文件"，没有任何服务端逻辑；切换托管方不影响功能。
 > 注意：**不同托管方会得到不同网址**。若希望团队始终访问同一个域名，建议绑定自己的域名（CNAME 到托管方），而不是依赖临时沙箱地址。
 
+## 六之二、自动上线（推代码即发布）
+
+前端 `vite.config.ts` 已设 `base: "./"`（资源用相对路径），**放在任何子路径下都能正常加载**——
+这是能直接用 GitHub Pages 这类「项目子路径」托管的前提，无需改任何代码。
+
+### 方案 A：GitHub Pages（仓库已内置工作流）
+
+仓库里已有 `.github/workflows/deploy-pages.yml`：推 `main` 分支 → 自动构建 → 自动发布。
+
+一次性启用步骤：
+
+1. 仓库 **Settings → Pages** → Source 选 **GitHub Actions**
+2. 之后每次 `git push`（或在本仓库 Actions 页点一次 Run workflow）都会自动上线
+3. 固定网址：`https://<用户名>.github.io/<仓库名>/`
+4. **换自己的域名**：Settings → Pages → Custom domain 填你的域名 →
+   在 DNS 服务商加一条 CNAME 指向 `<用户名>.github.io` → 勾选 Enforce HTTPS
+
+> ⚠️ 私有仓库用 Pages 需要 GitHub Pro；**公开仓库免费**且 Actions 用量不限。
+> 仓库若必须私有，用方案 B。
+
+### 方案 B：Cloudflare Pages（支持私有仓库，免费）
+
+1. Cloudflare 控制台 → Workers & Pages → Create → Pages → 连接 Git → 选该仓库
+2. 构建配置：**Root directory `app`**、Build command `npm run build`、Output directory `out`
+3. 得到固定域名 `https://<项目名>.pages.dev`，可再绑自定义域名
+
+### 方案 C：腾讯云 EdgeOne Pages / 对象存储 + CDN（国内访问最快）
+
+同样支持 Git 集成与自动构建；产物目录填 `app/out`。
+绑自定义域名到**中国大陆节点需 ICP 备案**，用境外节点则免备案但速度一般。
+
+### 共同要点
+
+- 构建时注入的 Supabase 配置来自 `app/.env.production`（已入库），CI 不需要额外配置密钥
+- 数据库结构变更（迁移 SQL）**不会**自动执行，仍需在 Supabase SQL Editor 手动跑一次
+- 首次部署后建议用管理员账号登录验一遍：登录、看板、入仓单、商品信息、双击复制
+
 ## 七、回归测试（改完必须跑）
 
 ```bash

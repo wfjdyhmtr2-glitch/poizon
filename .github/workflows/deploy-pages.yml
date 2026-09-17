@@ -1,0 +1,52 @@
+name: 构建并发布（GitHub Pages）
+
+# 推代码即上线：main 分支有新提交就自动构建 + 发布
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 也支持在 Actions 页面手动点一次
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个发布，新的提交来了就取消排队中的旧任务
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci
+
+      - name: 类型检查 + 构建
+        working-directory: app
+        run: npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
