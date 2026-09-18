@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { DateInput } from "@/components/DateInput"
 import { Label } from "@/components/ui/label"
 import {
   Table,
@@ -207,12 +208,7 @@ export function OtherExpensesPage() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="oe-date">发生日期</Label>
-              <Input
-                id="oe-date"
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-              />
+              <DateInput id="oe-date" value={date} onChange={setDate} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="oe-amount">

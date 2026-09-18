@@ -523,6 +523,20 @@ async function main() {
   console.log("  含正负说明:", oeText.includes("收回填负数"))
   await shot("08d-other-expenses")
 
+  console.log("  — 日期支持键盘直接输入（原生 date 在 Safari 里只能点选）—")
+  await setInput("#oe-date", "20260901")
+  await sleep(400)
+  console.log(
+    "  输入 20260901 →",
+    await evaluate(`document.querySelector('#oe-date')?.value ?? '(空)'`),
+  )
+  await setInput("#oe-date", "2026/9/5")
+  await sleep(400)
+  console.log(
+    "  输入 2026/9/5 →",
+    await evaluate(`document.querySelector('#oe-date')?.value ?? '(空)'`),
+  )
+
   console.log("  — 记一笔（含负数方向）—")
   console.log("  金额框可填:", await setInput("#oe-amount", "123.45"))
   await setInput("#oe-category", "冒烟费用")

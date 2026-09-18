@@ -30,7 +30,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { DateInput } from "@/components/DateInput"
 import { Progress } from "@/components/ui/progress"
 import {
   Table,
@@ -201,18 +201,16 @@ export function SalesDashboardPage() {
         ))}
         {preset === "custom" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Input
-              type="date"
+            <DateInput
               value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="h-9 w-[150px] tabular-nums"
+              onChange={setCustomStart}
+              className="h-9 w-[150px]"
             />
             <span className="text-sm text-muted-foreground">至</span>
-            <Input
-              type="date"
+            <DateInput
               value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="h-9 w-[150px] tabular-nums"
+              onChange={setCustomEnd}
+              className="h-9 w-[150px]"
             />
             {customStart && customEnd && customStart > customEnd ? (
               <span className="text-xs text-destructive">开始日期晚于结束日期</span>

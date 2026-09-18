@@ -4,6 +4,7 @@ import { useApp } from "@/contexts/AppContext"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { DateInput } from "@/components/DateInput"
 import { Label } from "@/components/ui/label"
 import {
   Dialog,
@@ -226,18 +227,16 @@ export function PurchasesPage() {
         ))}
         {rangePreset === "custom" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Input
-              type="date"
+            <DateInput
               value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="h-9 w-[150px] tabular-nums"
+              onChange={setCustomStart}
+              className="h-9 w-[150px]"
             />
             <span className="text-sm text-muted-foreground">至</span>
-            <Input
-              type="date"
+            <DateInput
               value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="h-9 w-[150px] tabular-nums"
+              onChange={setCustomEnd}
+              className="h-9 w-[150px]"
             />
           </div>
         ) : null}
@@ -397,12 +396,7 @@ export function PurchasesPage() {
             </div>
             <div className="space-y-1.5">
               <Label>采购日期</Label>
-              <Input
-                type="date"
-                value={purchasedAt}
-                onChange={(e) => setPurchasedAt(e.target.value)}
-                className="tabular-nums"
-              />
+              <DateInput value={purchasedAt} onChange={setPurchasedAt} />
             </div>
             <div className="space-y-1.5">
               <Label>运费（元）</Label>
