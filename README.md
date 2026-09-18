@@ -3,6 +3,9 @@
 服装鞋帽类商品经营管理系统：**入仓（采购单）→ 商品台账 → 销售订单 → 库存联动 → 财务看板** 的完整闭环。
 前端静态站点 + Supabase（Postgres / Auth / Storage），无自建服务端。
 
+**线上地址**：https://wfjdyhmtr2-glitch.github.io/poizon/ —— 向 `main` 分支 `push` 即自动构建发布（约 1.5 分钟）。
+数据库结构变更**不会**自动同步，需在 Supabase 的 SQL Editor 手动执行迁移脚本（见第五节）。
+
 ---
 
 ## 一、技术栈
