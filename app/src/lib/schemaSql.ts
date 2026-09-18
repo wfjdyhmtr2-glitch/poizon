@@ -290,6 +290,7 @@ alter table public.other_expenses       add column if not exists owner_id uuid;
 alter table public.market_snapshots     add column if not exists owner_id uuid;
 alter table public.market_snapshots     add column if not exists scope text not null default 'brand';
 alter table public.price_captures       add column if not exists owner_id uuid;
+alter table public.image_lookups        add column if not exists owner_id uuid;
 
 -- 存量数据归属管理员
 update public.products              set owner_id = (select id from auth.users where lower(email) = lower('${ADMIN_EMAIL}') limit 1) where owner_id is null;
@@ -341,6 +342,10 @@ drop trigger if exists price_captures_set_owner on public.price_captures;
 create trigger price_captures_set_owner before insert on public.price_captures
   for each row execute function public.set_owner_id();
 
+drop trigger if exists image_lookups_set_owner on public.image_lookups;
+create trigger image_lookups_set_owner before insert on public.image_lookups
+  for each row execute function public.set_owner_id();
+
 -- 策略：团队共享——所有成员可读可写（查看 / 录入 / 编辑 / 导入），删除仅限管理员。
 -- 注意：PostgreSQL 的同表多条策略之间是 OR 关系，所以必须**按操作拆分**；
 -- 若用一条 for all 覆盖，成员会连带拿到删除权。
@@ -351,7 +356,7 @@ begin
   foreach t in array array[
     'products', 'sales_orders', 'spu_mappings', 'product_images',
     'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses',
-    'market_snapshots', 'price_captures'
+    'market_snapshots', 'price_captures', 'image_lookups'
   ]
   loop
     execute format('drop policy if exists %I on public.%I', t || '_authenticated_all', t);
@@ -592,6 +597,25 @@ alter table if exists public.price_captures add column if not exists owner_id uu
 create index if not exists price_captures_date_idx     on public.price_captures (captured_at desc);
 create index if not exists price_captures_platform_idx on public.price_captures (platform);
 create index if not exists price_captures_sku_idx      on public.price_captures (sku);
+
+-- ---------- 图片找同款（粘贴图 → 识别关键词 → 平台搜索入口）----------
+-- 浏览器没有视觉能力，「认图」由 recognize-product Edge Function 调视觉模型完成；
+-- 没配模型时 status 停在 pending，用户手填关键词一样能用。
+create table if not exists public.image_lookups (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  image_url  text not null default '',
+  status     text not null default 'pending',
+  keyword    text,
+  brand      text,
+  note       text,
+  created_at timestamptz not null default now()
+);
+
+-- 老库升级：列必须先补齐，索引才能建（顺序错了会报 42703 并中断整个脚本）
+alter table if exists public.image_lookups add column if not exists owner_id uuid;
+
+create index if not exists image_lookups_created_idx on public.image_lookups (created_at desc);
 
 
 -- ---------- 商品表 ----------
@@ -926,6 +950,25 @@ alter table if exists public.price_captures add column if not exists owner_id uu
 create index if not exists price_captures_date_idx     on public.price_captures (captured_at desc);
 create index if not exists price_captures_platform_idx on public.price_captures (platform);
 create index if not exists price_captures_sku_idx      on public.price_captures (sku);
+
+-- ---------- 图片找同款（粘贴图 → 识别关键词 → 平台搜索入口）----------
+-- 浏览器没有视觉能力，「认图」由 recognize-product Edge Function 调视觉模型完成；
+-- 没配模型时 status 停在 pending，用户手填关键词一样能用。
+create table if not exists public.image_lookups (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid,
+  image_url  text not null default '',
+  status     text not null default 'pending',
+  keyword    text,
+  brand      text,
+  note       text,
+  created_at timestamptz not null default now()
+);
+
+-- 老库升级：列必须先补齐，索引才能建（顺序错了会报 42703 并中断整个脚本）
+alter table if exists public.image_lookups add column if not exists owner_id uuid;
+
+create index if not exists image_lookups_created_idx on public.image_lookups (created_at desc);
 
 -- 1) 商品表补齐后来新增的字段
 alter table public.products

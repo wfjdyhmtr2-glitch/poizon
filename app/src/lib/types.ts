@@ -568,3 +568,62 @@ export interface PriceCaptureDraft {
 /** 采集时可选平台 */
 export const CAPTURE_PLATFORMS = ["京东", "拼多多", "淘宝", "天猫", "1688", "抖音", "得物", "其他"]
 
+/* ============================ 图片找同款 ============================ */
+
+/**
+ * 粘贴一张商品图，系统给出京东 / 拼多多 / 淘宝的同款搜索入口。
+ *
+ * 浏览器本身没有视觉能力，所以「认图」这一步交给服务端的视觉模型
+ * （`recognize-product` Edge Function，走 OpenAI 兼容接口，默认用免费的 GLM-4V flash）。
+ * **没配模型也能用**：手动填几个关键词，一样能生成搜索链接。
+ */
+export interface ImageLookup {
+  id: string
+  /** 图片地址（Supabase Storage 的公开地址，或演示模式下的 dataURL） */
+  image_url: string
+  /** pending = 待识别；done = 有结果；failed = 识别失败 */
+  status: "pending" | "done" | "failed"
+  /** 搜索关键词（模型识别的，或手填的） */
+  keyword: string | null
+  /** 识别出的品牌 */
+  brand: string | null
+  /** 识别说明 / 失败原因 */
+  note: string | null
+  created_at: string
+}
+
+export interface ImageLookupDraft {
+  image_url: string
+  keyword?: string | null
+  brand?: string | null
+  note?: string | null
+}
+
+/**
+ * 各平台的同款搜索入口。
+ * 用**关键词**搜（不需要登录、不会被风控），这也是唯一稳定的做法——
+ * 平台的「以图搜」没有可用的公开 URL 入口。
+ */
+export const LOOKUP_PLATFORMS: { name: string; hint: string; url: (kw: string) => string }[] = [
+  {
+    name: "京东",
+    hint: "搜索页直接看价",
+    url: (kw) => `https://search.jd.com/Search?keyword=${encodeURIComponent(kw)}&enc=utf-8`,
+  },
+  {
+    name: "拼多多",
+    hint: "移动端网页版",
+    url: (kw) => `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(kw)}`,
+  },
+  {
+    name: "淘宝",
+    hint: "可能需要登录",
+    url: (kw) => `https://s.taobao.com/search?q=${encodeURIComponent(kw)}`,
+  },
+  {
+    name: "1688",
+    hint: "找货源进价",
+    url: (kw) => `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(kw)}`,
+  },
+]
+

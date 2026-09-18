@@ -5,6 +5,8 @@ import { computeTradeStage, filterSalesOrders, orderStockEffect, sortSalesOrders
 import type {
   AppMember,
   AppMemberDraft,
+  ImageLookup,
+  ImageLookupDraft,
   MarketQuery,
   MarketSnapshot,
   MarketTrendSeries,
@@ -41,6 +43,7 @@ const MARKET_KEY = "yunguan.demo.market.v1"
 const MARKET_SEEDED_KEY = "yunguan.demo.market-seeded.v1"
 const PRICE_KEY = "yunguan.demo.price-captures.v1"
 const PRICE_SEEDED_KEY = "yunguan.demo.price-captures-seeded.v1"
+const LOOKUP_KEY = "yunguan.demo.image-lookups.v1"
 const SESSION_KEY = "yunguan.demo.session.v1"
 
 const DEMO_ACCOUNT = { email: "admin@demo.com", password: "admin888" }
@@ -438,6 +441,26 @@ function readPriceStore(): PriceCapture[] {
 function writePriceStore(rows: PriceCapture[]) {
   try {
     localStorage.setItem(PRICE_KEY, JSON.stringify(rows))
+  } catch {
+    throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
+  }
+}
+
+/* ---------------- 演示：图片找同款 ---------------- */
+
+function readLookupStore(): ImageLookup[] {
+  try {
+    const raw = localStorage.getItem(LOOKUP_KEY)
+    if (raw) return JSON.parse(raw) as ImageLookup[]
+  } catch {
+    /* ignore */
+  }
+  return []
+}
+
+function writeLookupStore(rows: ImageLookup[]) {
+  try {
+    localStorage.setItem(LOOKUP_KEY, JSON.stringify(rows))
   } catch {
     throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
   }
@@ -1416,6 +1439,51 @@ export function createDemoBackend(): Backend {
     async deletePriceCaptures(ids) {
       const set = new Set(ids)
       writePriceStore(readPriceStore().filter((r) => !set.has(r.id)))
+    },
+
+    /* ---------- 图片找同款 ---------- */
+
+    async listImageLookups() {
+      return readLookupStore().slice(0, 100)
+    },
+
+    async createImageLookup(draft: ImageLookupDraft) {
+      const row: ImageLookup = {
+        id: uid(),
+        image_url: draft.image_url,
+        status: draft.keyword ? "done" : "pending",
+        keyword: draft.keyword ?? null,
+        brand: draft.brand ?? null,
+        note: draft.note ?? null,
+        created_at: new Date().toISOString(),
+      }
+      writeLookupStore([row, ...readLookupStore()])
+      return row
+    },
+
+    async updateImageLookup(id, patch) {
+      const rows = readLookupStore()
+      const idx = rows.findIndex((r) => r.id === id)
+      if (idx < 0) return
+      const next = { ...rows[idx] }
+      if (patch.keyword !== undefined) next.keyword = patch.keyword
+      if (patch.brand !== undefined) next.brand = patch.brand
+      if (patch.note !== undefined) next.note = patch.note
+      if (patch.status !== undefined) next.status = patch.status
+      rows[idx] = next
+      writeLookupStore(rows)
+    },
+
+    async deleteImageLookups(ids) {
+      const set = new Set(ids)
+      writeLookupStore(readLookupStore().filter((r) => !set.has(r.id)))
+    },
+
+    async recognizeImage() {
+      // 演示模式没有服务端，识别能力不可用——界面上会提示手动填关键词
+      throw new BackendError(
+        "演示模式没有服务端识别能力，请手动填写关键词；连接云端并部署 recognize-product 函数后即可自动识别",
+      )
     },
 
     supportsUpload: true,

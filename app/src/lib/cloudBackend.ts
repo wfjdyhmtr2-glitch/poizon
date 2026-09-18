@@ -8,6 +8,8 @@ import type {
   AppMember,
   AppMemberDraft,
   CloudConfig,
+  ImageLookup,
+  ImageLookupDraft,
   MarketQuery,
   MarketTrendSeries,
   MemberRole,
@@ -129,6 +131,22 @@ function normalizePriceCapture(row: Record<string, unknown>): PriceCapture {
     sku: row.sku ? String(row.sku) : null,
     note: row.note ? String(row.note) : null,
     captured_at: String(row.captured_at ?? "").slice(0, 10),
+    created_at: String(row.created_at ?? ""),
+  }
+}
+
+const IMAGE_LOOKUP_COLUMNS = "id,image_url,status,keyword,brand,note,created_at"
+
+/** 图片找同款行归一化 */
+function normalizeImageLookup(row: Record<string, unknown>): ImageLookup {
+  const status = String(row.status ?? "pending")
+  return {
+    id: String(row.id),
+    image_url: String(row.image_url ?? ""),
+    status: status === "done" || status === "failed" ? status : "pending",
+    keyword: row.keyword ? String(row.keyword) : null,
+    brand: row.brand ? String(row.brand) : null,
+    note: row.note ? String(row.note) : null,
     created_at: String(row.created_at ?? ""),
   }
 }
@@ -874,6 +892,64 @@ export function createCloudBackend(config: CloudConfig): Backend {
       if (!ids.length) return
       const { error } = await client().from("price_captures").delete().in("id", ids)
       if (error) throw new BackendError(translateDbError(error.message))
+    },
+
+    /* ---------- 图片找同款 ---------- */
+
+    async listImageLookups() {
+      const { data, error } = await client()
+        .from("image_lookups")
+        .select(IMAGE_LOOKUP_COLUMNS)
+        .order("created_at", { ascending: false })
+        .limit(100)
+      if (error) throw new BackendError(translateDbError(error.message))
+      return (data ?? []).map((r) => normalizeImageLookup(r as Record<string, unknown>))
+    },
+
+    async createImageLookup(draft: ImageLookupDraft) {
+      const { data, error } = await client()
+        .from("image_lookups")
+        .insert({
+          image_url: draft.image_url,
+          keyword: draft.keyword ?? null,
+          brand: draft.brand ?? null,
+          note: draft.note ?? null,
+          status: draft.keyword ? "done" : "pending",
+        })
+        .select(IMAGE_LOOKUP_COLUMNS)
+        .single()
+      if (error) throw new BackendError(translateDbError(error.message))
+      return normalizeImageLookup(data as Record<string, unknown>)
+    },
+
+    async updateImageLookup(id, patch) {
+      const payload: Record<string, unknown> = {}
+      if (patch.keyword !== undefined) payload.keyword = patch.keyword
+      if (patch.brand !== undefined) payload.brand = patch.brand
+      if (patch.note !== undefined) payload.note = patch.note
+      if (patch.status !== undefined) payload.status = patch.status
+      if (!Object.keys(payload).length) return
+      const { error } = await client().from("image_lookups").update(payload).eq("id", id)
+      if (error) throw new BackendError(translateDbError(error.message))
+    },
+
+    async deleteImageLookups(ids) {
+      if (!ids.length) return
+      const { error } = await client().from("image_lookups").delete().in("id", ids)
+      if (error) throw new BackendError(translateDbError(error.message))
+    },
+
+    async recognizeImage(imageUrl: string) {
+      const { data, error } = await client().functions.invoke("recognize-product", {
+        body: { image_url: imageUrl },
+      })
+      if (error) throw new BackendError(await describeFunctionError(error))
+      const row = (data ?? {}) as { keyword?: string; brand?: string; note?: string }
+      return {
+        keyword: String(row.keyword ?? ""),
+        brand: String(row.brand ?? ""),
+        note: String(row.note ?? ""),
+      }
     },
 
     supportsUpload: true,

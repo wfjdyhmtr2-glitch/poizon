@@ -35,6 +35,7 @@ const MarketPage = lazy(() => import("@/pages/MarketPage").then((m) => ({ defaul
 const PriceCapturePage = lazy(() =>
   import("@/pages/PriceCapturePage").then((m) => ({ default: m.PriceCapturePage })),
 )
+const LookupPage = lazy(() => import("@/pages/LookupPage").then((m) => ({ default: m.LookupPage })))
 
 function Splash({ label = "正在准备工作台…" }: { label?: string }) {
   return (
@@ -136,6 +137,16 @@ function AppRoutes() {
           <Protected>
             <Suspense fallback={<PageFallback />}>
               <PriceCapturePage />
+            </Suspense>
+          </Protected>
+        }
+      />
+      <Route
+        path="/lookup"
+        element={
+          <Protected>
+            <Suspense fallback={<PageFallback />}>
+              <LookupPage />
             </Suspense>
           </Protected>
         }

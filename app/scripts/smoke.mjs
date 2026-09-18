@@ -694,6 +694,15 @@ async function main() {
   console.log("  记录已出现:", (await bodyText()).includes("书签测试商品"))
   await shot("08g3-capture-saved")
 
+  console.log("\n=== 8h. 图片找同款（粘贴图出搜索链接）===")
+  await goto(`${BASE}/#/lookup`, 2400)
+  const lookupText = await bodyText()
+  console.log("  页面标题:", (await text("h1")) || "(空)")
+  console.log("  含粘贴区:", lookupText.includes("粘贴图片"))
+  console.log("  含识别结果区:", lookupText.includes("识别结果"))
+  console.log("  说明里有平台入口:", lookupText.includes("京东") && lookupText.includes("拼多多"))
+  await shot("08h-lookup")
+
   console.log("\n=== 9. 销售看板 ===")
   await viewport(1440, 900)
   await goto(`${BASE}/#/sales`, 2600)

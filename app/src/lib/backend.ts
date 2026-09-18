@@ -1,6 +1,8 @@
 import type {
   AppMember,
   AppMemberDraft,
+  ImageLookup,
+  ImageLookupDraft,
   MarketOverview,
   MarketQuery,
   MarketRankRow,
@@ -142,6 +144,25 @@ export interface Backend {
   }): Promise<PriceCapture[]>
   createPriceCapture(draft: PriceCaptureDraft): Promise<PriceCapture>
   deletePriceCaptures(ids: string[]): Promise<void>
+
+  /* ---------- 图片找同款 ---------- */
+  listImageLookups(): Promise<ImageLookup[]>
+  createImageLookup(draft: ImageLookupDraft): Promise<ImageLookup>
+  updateImageLookup(
+    id: string,
+    patch: {
+      keyword?: string | null
+      brand?: string | null
+      note?: string | null
+      status?: ImageLookup["status"]
+    },
+  ): Promise<void>
+  deleteImageLookups(ids: string[]): Promise<void>
+  /**
+   * 让服务端识别这张图（recognize-product Edge Function）。
+   * 未部署该函数时会抛错，调用方应降级成「手动填关键词」。
+   */
+  recognizeImage(imageUrl: string): Promise<{ keyword: string; brand: string; note: string }>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean
