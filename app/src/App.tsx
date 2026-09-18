@@ -32,10 +32,9 @@ const OtherExpensesPage = lazy(() =>
 )
 const TeamPage = lazy(() => import("@/pages/TeamPage").then((m) => ({ default: m.TeamPage })))
 const MarketPage = lazy(() => import("@/pages/MarketPage").then((m) => ({ default: m.MarketPage })))
-const PriceCapturePage = lazy(() =>
-  import("@/pages/PriceCapturePage").then((m) => ({ default: m.PriceCapturePage })),
+const SourcingPage = lazy(() =>
+  import("@/pages/SourcingPage").then((m) => ({ default: m.SourcingPage })),
 )
-const LookupPage = lazy(() => import("@/pages/LookupPage").then((m) => ({ default: m.LookupPage })))
 
 function Splash({ label = "正在准备工作台…" }: { label?: string }) {
   return (
@@ -131,22 +130,24 @@ function AppRoutes() {
           </Protected>
         }
       />
-      <Route
-        path="/capture"
-        element={
-          <Protected>
-            <Suspense fallback={<PageFallback />}>
-              <PriceCapturePage />
-            </Suspense>
-          </Protected>
-        }
-      />
+      {/* 合并后的「找同款比价」：/lookup 是导航主入口；
+          /capture 继续保留，兼容已经拖到书签栏的采集书签 */}
       <Route
         path="/lookup"
         element={
           <Protected>
             <Suspense fallback={<PageFallback />}>
-              <LookupPage />
+              <SourcingPage />
+            </Suspense>
+          </Protected>
+        }
+      />
+      <Route
+        path="/capture"
+        element={
+          <Protected>
+            <Suspense fallback={<PageFallback />}>
+              <SourcingPage />
             </Suspense>
           </Protected>
         }
