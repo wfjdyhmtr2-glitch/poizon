@@ -1,6 +1,11 @@
 import type {
   AppMember,
   AppMemberDraft,
+  MarketOverview,
+  MarketQuery,
+  MarketRankRow,
+  MarketSnapshotDraft,
+  MarketTrendSeries,
   MemberRole,
   OtherExpense,
   OtherExpenseDraft,
@@ -110,6 +115,22 @@ export interface Backend {
   setMemberRole(id: string, role: MemberRole): Promise<void>
   resetMemberPassword(id: string, password: string): Promise<void>
   deleteMembers(ids: string[]): Promise<void>
+
+  /* ---------- 市场数据（选品参考，非本店数据）---------- */
+  /** 品牌清单（含各品牌商品数），用于筛选下拉 */
+  listMarketBrands(): Promise<{ brand: string; skuCount: number }[]>
+  getMarketOverview(query: MarketQuery): Promise<MarketOverview>
+  /**
+   * 机会排行：**在数据库侧聚合**后只返回 TOP N。
+   * 前端永远不拉全量明细，这是数据量大也不卡的关键。
+   */
+  listMarketRanking(query: MarketQuery): Promise<MarketRankRow[]>
+  /** 取指定商品的曲线数据；调用方需限制 skus 数量（页面里最多 8 个） */
+  listMarketTrend(skus: string[], start?: string, end?: string): Promise<MarketTrendSeries[]>
+  /** 批量导入快照，(sku, 日期) 相同则覆盖 */
+  importMarketSnapshots(
+    drafts: MarketSnapshotDraft[],
+  ): Promise<{ inserted: number; updated: number; failed: number }>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean

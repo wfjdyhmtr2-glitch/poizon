@@ -601,6 +601,43 @@ async function main() {
   await dismissToasts()
   console.log("  移除后已消失:", !(await bodyText()).includes("smoke@demo.com"))
 
+  console.log("\n=== 8f. 市场机会（收藏 / 销量趋势选品）===")
+  await goto(`${BASE}/#/market`, 3000)
+  const marketText = await bodyText()
+  console.log("  页面标题:", (await text("h1")) || "(空)")
+  console.log(
+    "  含统计卡:",
+    marketText.includes("覆盖商品") && marketText.includes("数据天数") && marketText.includes("最新数据"),
+  )
+  console.log("  含时间范围筛选:", marketText.includes("近 7 天") && marketText.includes("近 90 天"))
+  console.log("  含指标切换:", marketText.includes("收藏趋势") && marketText.includes("销量趋势"))
+  console.log("  有演示市场数据:", marketText.includes("MK-001"))
+  console.log("  含机会排行:", marketText.includes("机会排行"))
+  await shot("08f-market")
+
+  console.log("  — 加入曲线对比 —")
+  const addCurve = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '加曲线');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点加曲线:", addCurve)
+  await sleep(2400)
+  console.log("  曲线区已进入对比:", (await bodyText()).includes("正在对比"))
+  await shot("08f2-market-trend")
+
+  console.log("  — 按 SPUID 搜索 —")
+  await setInput("#market-keyword", "MK-003")
+  await sleep(300)
+  const doSearch = await evaluate(`(() => {
+    const btn = document.querySelector('button[aria-label="搜索商品"]');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点搜索:", doSearch)
+  await sleep(2000)
+  const filtered = await bodyText()
+  console.log("  结果已按关键词收窄:", filtered.includes("MK-003") && !filtered.includes("MK-005"))
+  await shot("08f3-market-search")
+
   console.log("\n=== 9. 销售看板 ===")
   await viewport(1440, 900)
   await goto(`${BASE}/#/sales`, 2600)

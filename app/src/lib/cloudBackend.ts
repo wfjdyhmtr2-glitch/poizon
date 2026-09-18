@@ -8,6 +8,8 @@ import type {
   AppMember,
   AppMemberDraft,
   CloudConfig,
+  MarketQuery,
+  MarketTrendSeries,
   MemberRole,
   OtherExpense,
   Product,
@@ -701,6 +703,111 @@ export function createCloudBackend(config: CloudConfig): Backend {
       for (const id of ids) {
         await callAdminUsers(client(), { action: "delete", id })
       }
+    },
+
+    /* ---------- 市场数据（选品参考，非本店数据）---------- */
+
+    async listMarketBrands() {
+      const { data, error } = await client().rpc("market_brands")
+      if (error) throw new BackendError(translateDbError(error.message))
+      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+        brand: String(r.brand ?? "未标注"),
+        skuCount: Number(r.sku_count ?? 0),
+      }))
+    },
+
+    async getMarketOverview(query: MarketQuery) {
+      const { data, error } = await client().rpc("market_overview", {
+        p_start: query.start ?? null,
+        p_end: query.end ?? null,
+      })
+      if (error) throw new BackendError(translateDbError(error.message))
+      const row = ((data ?? []) as Record<string, unknown>[])[0] ?? {}
+      return {
+        skuCount: Number(row.sku_count ?? 0),
+        dayCount: Number(row.day_count ?? 0),
+        latestDate: row.latest_date ? String(row.latest_date).slice(0, 10) : "",
+        snapshotCount: Number(row.snapshot_count ?? 0),
+      }
+    },
+
+    async listMarketRanking(query: MarketQuery) {
+      const { data, error } = await client().rpc("market_ranking", {
+        p_start: query.start ?? null,
+        p_end: query.end ?? null,
+        p_brands: query.brands?.length ? query.brands : null,
+        p_keyword: query.keyword?.trim() || null,
+        p_limit: query.limit ?? 60,
+      })
+      if (error) throw new BackendError(translateDbError(error.message))
+      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+        sku: String(r.sku ?? ""),
+        name: String(r.name ?? ""),
+        brand: r.brand ? String(r.brand) : null,
+        salesTotal: Number(r.sales_total ?? 0),
+        favoritesGrowth: Number(r.favorites_growth ?? 0),
+        favoritesLatest: Number(r.favorites_latest ?? 0),
+        points: Number(r.points ?? 0),
+      }))
+    },
+
+    async listMarketTrend(skus: string[], start?: string, end?: string) {
+      if (!skus.length) return []
+      let q = client()
+        .from("market_snapshots")
+        .select("sku,snapshot_date,sales,favorites,name,brand")
+        .in("sku", skus)
+        .order("snapshot_date", { ascending: true })
+      if (start) q = q.gte("snapshot_date", start)
+      if (end) q = q.lte("snapshot_date", end)
+      const { data, error } = await q
+      if (error) throw new BackendError(translateDbError(error.message))
+
+      const bySku = new Map<string, MarketTrendSeries>()
+      for (const raw of data ?? []) {
+        const row = raw as Record<string, unknown>
+        const sku = String(row.sku ?? "")
+        let series = bySku.get(sku)
+        if (!series) {
+          series = {
+            sku,
+            name: String(row.name ?? ""),
+            brand: row.brand ? String(row.brand) : null,
+            points: [],
+          }
+          bySku.set(sku, series)
+        }
+        series.points.push({
+          date: String(row.snapshot_date ?? "").slice(0, 10),
+          sales: Number(row.sales ?? 0),
+          favorites: Number(row.favorites ?? 0),
+        })
+      }
+      // 保持调用方传入的顺序，图表颜色才稳定
+      return skus
+        .map((s) => bySku.get(s))
+        .filter((s): s is MarketTrendSeries => Boolean(s))
+    },
+
+    async importMarketSnapshots(drafts) {
+      if (!drafts.length) return { inserted: 0, updated: 0, failed: 0 }
+      const SIZE = 500 // 分片，避免单次请求体过大
+      let failed = 0
+      for (let i = 0; i < drafts.length; i += SIZE) {
+        const chunk = drafts.slice(i, i + SIZE).map((d) => ({
+          snapshot_date: d.snapshot_date,
+          sku: d.sku,
+          brand: d.brand ?? null,
+          name: d.name ?? null,
+          sales: d.sales ?? null,
+          favorites: d.favorites ?? null,
+        }))
+        const { error } = await client()
+          .from("market_snapshots")
+          .upsert(chunk, { onConflict: "owner_id,sku,snapshot_date" })
+        if (error) failed += chunk.length
+      }
+      return { inserted: drafts.length - failed, updated: 0, failed }
     },
 
     supportsUpload: true,

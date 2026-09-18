@@ -40,6 +40,26 @@ create table if not exists public.other_expenses (
 create index if not exists other_expenses_date_idx  on public.other_expenses (expense_date desc);
 create index if not exists other_expenses_owner_idx on public.other_expenses (owner_id);
 
+-- ---------- 市场快照（选品参考：品牌销量 / 收藏数，非本店数据）----------
+-- (owner_id, sku, snapshot_date) 唯一 → 同一天重复导入是覆盖，不是堆叠
+create table if not exists public.market_snapshots (
+  id            uuid primary key default gen_random_uuid(),
+  owner_id      uuid,
+  snapshot_date date not null,
+  sku           text not null,
+  brand         text,
+  name          text,
+  sales         numeric(14,2),
+  favorites     numeric(14,0),
+  created_at    timestamptz not null default now()
+);
+
+create unique index if not exists market_snapshots_key
+  on public.market_snapshots (owner_id, sku, snapshot_date);
+create index if not exists market_snapshots_date_idx  on public.market_snapshots (snapshot_date desc);
+create index if not exists market_snapshots_brand_idx on public.market_snapshots (brand);
+create index if not exists market_snapshots_sku_idx   on public.market_snapshots (sku);
+
 -- 1) 商品表补齐后来新增的字段
 alter table public.products
   add column if not exists purchase_platform text,
@@ -494,7 +514,8 @@ declare
 begin
   foreach t in array array[
     'products', 'sales_orders', 'spu_mappings', 'product_images',
-    'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses'
+    'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses',
+    'market_snapshots'
   ]
   loop
     execute format('drop policy if exists %I on public.%I', t || '_authenticated_all', t);
@@ -537,6 +558,96 @@ drop policy if exists "product_images_auth_delete" on storage.objects;
 create policy "product_images_auth_delete" on storage.objects
   for delete to authenticated
   using (bucket_id = 'product-images' and public.is_member());
+
+-- ---------- 市场数据的聚合函数 ----------
+-- 排行与汇总都在**数据库侧**算完再返回 TOP N，前端永远不拉全量明细——
+-- 这是「商品再多、日期再多也不卡」的关键。
+-- 这几个函数是 security invoker（默认），所以 RLS 照常生效。
+
+-- 品牌清单（附带每个品牌下的商品数），用于筛选下拉
+create or replace function public.market_brands()
+returns table (brand text, sku_count integer)
+language sql
+stable
+set search_path = public
+as $$
+  select coalesce(nullif(trim(m.brand), ''), '未标注') as brand,
+         count(distinct m.sku)::integer as sku_count
+    from public.market_snapshots m
+   group by 1
+   order by 2 desc;
+$$;
+
+-- 数据概览：覆盖多少商品、多少天、最新日期、总记录数
+create or replace function public.market_overview(
+  p_start date default null,
+  p_end   date default null
+)
+returns table (sku_count integer, day_count integer, latest_date date, snapshot_count integer)
+language sql
+stable
+set search_path = public
+as $$
+  select count(distinct m.sku)::integer,
+         count(distinct m.snapshot_date)::integer,
+         max(m.snapshot_date),
+         count(*)::integer
+    from public.market_snapshots m
+   where (p_start is null or m.snapshot_date >= p_start)
+     and (p_end   is null or m.snapshot_date <= p_end);
+$$;
+
+-- 机会排行：区间内每个商品的销量合计 + 收藏增量，按收藏增量排序
+create or replace function public.market_ranking(
+  p_start   date    default null,
+  p_end     date    default null,
+  p_brands  text[]  default null,
+  p_keyword text    default null,
+  p_limit   integer default 50
+)
+returns table (
+  sku              text,
+  name             text,
+  brand            text,
+  sales_total      numeric,
+  favorites_growth numeric,
+  favorites_latest numeric,
+  points           integer
+)
+language sql
+stable
+set search_path = public
+as $$
+  with base as (
+    select m.sku,
+           max(m.name)  as name,
+           max(m.brand) as brand,
+           sum(coalesce(m.sales, 0)) as sales_total,
+           (array_agg(coalesce(m.favorites, 0) order by m.snapshot_date asc))[1]  as fav_first,
+           (array_agg(coalesce(m.favorites, 0) order by m.snapshot_date desc))[1] as fav_last,
+           count(*)::integer as points
+      from public.market_snapshots m
+     where (p_start is null or m.snapshot_date >= p_start)
+       and (p_end   is null or m.snapshot_date <= p_end)
+       and (p_brands is null
+            or coalesce(nullif(trim(m.brand), ''), '未标注') = any(p_brands))
+       and (p_keyword is null or p_keyword = ''
+            or m.sku ilike '%' || p_keyword || '%'
+            or coalesce(m.name, '') ilike '%' || p_keyword || '%')
+     group by m.sku
+  )
+  select sku,
+         coalesce(name, ''),
+         brand,
+         sales_total,
+         coalesce(fav_last, 0) - coalesce(fav_first, 0) as favorites_growth,
+         coalesce(fav_last, 0) as favorites_latest,
+         points
+    from base
+   order by (coalesce(fav_last, 0) - coalesce(fav_first, 0)) desc,
+            sales_total desc
+   limit greatest(1, least(coalesce(p_limit, 50), 500));
+$$;
 
 
 -- 5) 让 PostgREST 立刻感知新表与新字段

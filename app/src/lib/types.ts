@@ -400,3 +400,100 @@ export interface SalesImportRow {
   warnings: string[]
 }
 
+/* ============================ 市场数据（选品参考）============================ */
+
+/**
+ * 市场快照：定时抓取的「非本店」公开数据（品牌维度的销量、收藏数），
+ * 用来判断哪些品还有销售机会。
+ *
+ * 一个商品一天一条记录；`(owner_id, sku, snapshot_date)` 唯一，
+ * 所以同一天重复导入是**覆盖**而不是堆叠——可以放心地反复导。
+ */
+export interface MarketSnapshot {
+  id: string
+  /** 数据日期 YYYY-MM-DD */
+  snapshot_date: string
+  /** 商品 SPUID */
+  sku: string
+  brand: string | null
+  name: string | null
+  /** 平台销量（按导入的列填，件或金额都行） */
+  sales: number | null
+  /** 收藏数 */
+  favorites: number | null
+}
+
+export interface MarketSnapshotDraft {
+  snapshot_date: string
+  sku: string
+  brand?: string | null
+  name?: string | null
+  sales?: number | null
+  favorites?: number | null
+}
+
+/** 筛选条件（排行与概览共用） */
+export interface MarketQuery {
+  brands?: string[]
+  keyword?: string
+  /** 起始日期 YYYY-MM-DD */
+  start?: string
+  /** 结束日期 YYYY-MM-DD */
+  end?: string
+  /** 排行返回条数上限 */
+  limit?: number
+}
+
+/** 排行行：时间区间内按商品聚合后的表现 */
+export interface MarketRankRow {
+  sku: string
+  name: string
+  brand: string | null
+  /** 区间内销量合计 */
+  salesTotal: number
+  /** 区间内收藏增量（最后一天 − 第一天） */
+  favoritesGrowth: number
+  /** 最后一天的收藏数 */
+  favoritesLatest: number
+  /** 区间内覆盖的天数 */
+  points: number
+}
+
+/** 数据概览 */
+export interface MarketOverview {
+  skuCount: number
+  dayCount: number
+  latestDate: string
+  snapshotCount: number
+}
+
+/** 曲线上的一个点 */
+export interface MarketTrendPoint {
+  date: string
+  sales: number
+  favorites: number
+}
+
+/** 一个商品的时间序列 */
+export interface MarketTrendSeries {
+  sku: string
+  name: string
+  brand: string | null
+  points: MarketTrendPoint[]
+}
+
+/** 导入时可识别的列名（表头模糊匹配用，大小写与空格都会归一化） */
+export const MARKET_IMPORT_COLUMNS: {
+  header: string
+  key: keyof MarketSnapshotDraft
+  required?: boolean
+  hint: string
+}[] = [
+  { header: "日期", key: "snapshot_date", required: true, hint: "2026-09-18 这种格式" },
+  { header: "SPUID", key: "sku", required: true, hint: "商品编号，重复导入会覆盖同一天" },
+  { header: "品牌", key: "brand", hint: "如 Nike / 阿迪达斯" },
+  { header: "商品名称", key: "name", hint: "便于识别" },
+  { header: "销量", key: "sales", hint: "平台销量（件或金额都行）" },
+  { header: "收藏数", key: "favorites", hint: "该商品当前收藏数" },
+]
+

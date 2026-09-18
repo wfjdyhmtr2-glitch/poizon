@@ -5,6 +5,9 @@ import { computeTradeStage, filterSalesOrders, orderStockEffect, sortSalesOrders
 import type {
   AppMember,
   AppMemberDraft,
+  MarketQuery,
+  MarketSnapshot,
+  MarketTrendSeries,
   MemberRole,
   OtherExpense,
   Product,
@@ -31,6 +34,8 @@ const OTHER_KEY = "yunguan.demo.other-expenses.v1"
 const OTHER_SEEDED_KEY = "yunguan.demo.other-expenses-seeded.v1"
 const MEMBER_KEY = "yunguan.demo.members.v1"
 const MEMBER_SEEDED_KEY = "yunguan.demo.members-seeded.v1"
+const MARKET_KEY = "yunguan.demo.market.v1"
+const MARKET_SEEDED_KEY = "yunguan.demo.market-seeded.v1"
 const SESSION_KEY = "yunguan.demo.session.v1"
 
 const DEMO_ACCOUNT = { email: "admin@demo.com", password: "admin888" }
@@ -286,6 +291,86 @@ function writeMemberStore(rows: AppMember[]) {
   } catch {
     throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
   }
+}
+
+/* ---------------- 演示：市场快照（选品参考：品牌销量 / 收藏数）---------------- */
+
+/** 演示数据：3 个品牌 8 个商品 × 最近 30 天，收藏数带增长与波动 */
+function buildDemoMarket(): MarketSnapshot[] {
+  const brands = ["Nike", "adidas", "New Balance"]
+  const names = [
+    "空军一号 低帮",
+    "Samba 复古",
+    "574 经典",
+    "Dunk 低帮",
+    "2002R 灰蓝",
+    "Gazelle 麂皮",
+    "AJ1 中帮",
+    "990v5 元祖灰",
+  ]
+  const rows: MarketSnapshot[] = []
+  const today = new Date()
+  for (let back = 29; back >= 0; back--) {
+    const date = new Date(today.getTime() - back * 86400000).toISOString().slice(0, 10)
+    const step = 29 - back
+    names.forEach((name, i) => {
+      const base = 120 + i * 95
+      const growth = step * (4 + (i % 4) * 3)
+      const wave = Math.round(Math.sin((step + i * 2) / 3) * 14)
+      rows.push({
+        id: `demo-market-${i}-${date}`,
+        snapshot_date: date,
+        sku: `MK-${String(i + 1).padStart(3, "0")}`,
+        brand: brands[i % brands.length],
+        name,
+        sales: 4 + ((i * 5 + step * 2) % 19),
+        favorites: base + growth + wave,
+      })
+    })
+  }
+  return rows
+}
+
+function readMarketStore(): MarketSnapshot[] {
+  try {
+    const raw = localStorage.getItem(MARKET_KEY)
+    if (raw) return JSON.parse(raw) as MarketSnapshot[]
+    if (localStorage.getItem(MARKET_SEEDED_KEY)) return []
+  } catch {
+    /* ignore */
+  }
+  const seeded = buildDemoMarket()
+  try {
+    localStorage.setItem(MARKET_KEY, JSON.stringify(seeded))
+    localStorage.setItem(MARKET_SEEDED_KEY, "1")
+  } catch {
+    /* ignore */
+  }
+  return seeded
+}
+
+function writeMarketStore(rows: MarketSnapshot[]) {
+  try {
+    localStorage.setItem(MARKET_KEY, JSON.stringify(rows))
+  } catch {
+    throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
+  }
+}
+
+/** 演示模式的筛选；云端是数据库侧做（见 market_ranking 函数），不拉明细 */
+function filterMarket(rows: MarketSnapshot[], query: MarketQuery): MarketSnapshot[] {
+  const brands = query.brands?.length ? new Set(query.brands) : null
+  const keyword = query.keyword?.trim().toLowerCase() ?? ""
+  return rows.filter((r) => {
+    if (query.start && r.snapshot_date < query.start) return false
+    if (query.end && r.snapshot_date > query.end) return false
+    if (brands && !brands.has((r.brand ?? "").trim() || "未标注")) return false
+    if (keyword) {
+      const hay = `${r.sku} ${r.name ?? ""}`.toLowerCase()
+      if (!hay.includes(keyword)) return false
+    }
+    return true
+  })
 }
 
 /* ---------------- 演示：入仓单（采购订单）存储 ---------------- */
@@ -1110,6 +1195,114 @@ export function createDemoBackend(): Backend {
         throw new BackendError("演示账号不能被移除")
       }
       writeMemberStore(rows.filter((m) => !set.has(m.id)))
+    },
+
+    /* ---------- 市场数据（选品参考，非本店数据）---------- */
+
+    async listMarketBrands() {
+      const skusByBrand = new Map<string, Set<string>>()
+      for (const r of readMarketStore()) {
+        const brand = (r.brand ?? "").trim() || "未标注"
+        const set = skusByBrand.get(brand) ?? new Set<string>()
+        set.add(r.sku)
+        skusByBrand.set(brand, set)
+      }
+      return [...skusByBrand.entries()]
+        .map(([brand, skus]) => ({ brand, skuCount: skus.size }))
+        .sort((a, b) => b.skuCount - a.skuCount)
+    },
+
+    async getMarketOverview(query: MarketQuery) {
+      const rows = filterMarket(readMarketStore(), query)
+      const skus = new Set(rows.map((r) => r.sku))
+      const days = [...new Set(rows.map((r) => r.snapshot_date))].sort()
+      return {
+        skuCount: skus.size,
+        dayCount: days.length,
+        latestDate: days[days.length - 1] ?? "",
+        snapshotCount: rows.length,
+      }
+    },
+
+    async listMarketRanking(query: MarketQuery) {
+      const bySku = new Map<string, MarketSnapshot[]>()
+      for (const r of filterMarket(readMarketStore(), query)) {
+        const list = bySku.get(r.sku) ?? []
+        list.push(r)
+        bySku.set(r.sku, list)
+      }
+      const ranked = [...bySku.entries()].map(([sku, list]) => {
+        const sorted = [...list].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+        const first = sorted[0]
+        const last = sorted[sorted.length - 1]
+        return {
+          sku,
+          name: last.name ?? "",
+          brand: last.brand ?? null,
+          salesTotal: sorted.reduce((acc, r) => acc + (r.sales ?? 0), 0),
+          favoritesGrowth: (last.favorites ?? 0) - (first.favorites ?? 0),
+          favoritesLatest: last.favorites ?? 0,
+          points: sorted.length,
+        }
+      })
+      ranked.sort((a, b) => b.favoritesGrowth - a.favoritesGrowth || b.salesTotal - a.salesTotal)
+      return ranked.slice(0, query.limit ?? 60)
+    },
+
+    async listMarketTrend(skus, start, end) {
+      const wanted = new Set(skus)
+      const rows = readMarketStore()
+        .filter((r) => wanted.has(r.sku))
+        .filter((r) => (!start || r.snapshot_date >= start) && (!end || r.snapshot_date <= end))
+        .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+      return skus
+        .map((sku) => {
+          const list = rows.filter((r) => r.sku === sku)
+          if (!list.length) return null
+          const last = list[list.length - 1]
+          const series: MarketTrendSeries = {
+            sku,
+            name: last.name ?? "",
+            brand: last.brand ?? null,
+            points: list.map((r) => ({
+              date: r.snapshot_date,
+              sales: r.sales ?? 0,
+              favorites: r.favorites ?? 0,
+            })),
+          }
+          return series
+        })
+        .filter((s): s is MarketTrendSeries => Boolean(s))
+    },
+
+    async importMarketSnapshots(drafts) {
+      const rows = readMarketStore()
+      const index = new Map(rows.map((r, i) => [`${r.sku}|${r.snapshot_date}`, i]))
+      let inserted = 0
+      let updated = 0
+      for (const d of drafts) {
+        const key = `${d.sku}|${d.snapshot_date}`
+        const at = index.get(key)
+        const row: MarketSnapshot = {
+          id: at === undefined ? uid() : rows[at].id,
+          snapshot_date: d.snapshot_date,
+          sku: d.sku,
+          brand: d.brand ?? null,
+          name: d.name ?? null,
+          sales: d.sales ?? null,
+          favorites: d.favorites ?? null,
+        }
+        if (at === undefined) {
+          index.set(key, rows.length)
+          rows.push(row)
+          inserted += 1
+        } else {
+          rows[at] = row
+          updated += 1
+        }
+      }
+      writeMarketStore(rows)
+      return { inserted, updated, failed: 0 }
     },
 
     supportsUpload: true,
