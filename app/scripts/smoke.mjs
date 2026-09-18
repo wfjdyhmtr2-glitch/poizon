@@ -482,6 +482,7 @@ async function main() {
   console.log("  含已登记列表:", imagesText.includes("已登记"))
   console.log("  含 SPUID 过滤角标:", /DEMO-[A-Z]+-\d+/.test(imagesText) || imagesText.includes("全部（"))
   console.log("  演示种子图已生成:", imagesText.includes("通用") || /白色|黑色|米色/.test(imagesText))
+  console.log("  默认主图规则已更新:", imagesText.includes("自动取第一张录入的图"))
   await shot("08b-images-desktop")
 
   console.log("\n=== 8c. 入仓管理（采购单维度 + 时间筛选）===")

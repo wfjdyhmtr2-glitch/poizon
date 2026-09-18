@@ -230,15 +230,23 @@ export function ImageLibraryPage() {
         uploadedByRow.set(row.key, urls)
       }
 
-      /* 2) 默认主图：勾选行的第一张（新图优先，否则用该行已有图） */
+      /* 2) 默认主图：
+            - 手动勾选了某行 → 用该行第一张（新图优先，否则该行已有图）
+            - 没勾选 → 自动用「第一张录入的图片」（按行顺序的第一张新图），
+              这就是用户期望的默认行为，不需要每次手动去勾 */
       let imageUrl = regInfo?.image_url ?? ""
-      const defRow = regRows.find((r) => r.key === defaultRowKey)
+      const defRow = defaultRowKey ? regRows.find((r) => r.key === defaultRowKey) : undefined
       if (defRow) {
         const fresh = uploadedByRow.get(defRow.key) ?? []
         const existing = defRow.color.trim()
           ? existingByColor.get(defRow.color.trim())?.[0]?.url
           : existingByColor.get("")?.[0]?.url
         imageUrl = fresh[0] ?? existing ?? imageUrl
+      } else {
+        const firstUploaded = regRows
+          .map((r) => uploadedByRow.get(r.key)?.[0])
+          .find((url): url is string => Boolean(url))
+        if (firstUploaded) imageUrl = firstUploaded
       }
 
       await backend.upsertSpuInfo({
@@ -267,7 +275,7 @@ export function ImageLibraryPage() {
     <div className="space-y-4">
       <PageHeader
         title="商品信息"
-        description="每个 SPUID 登记名称，并按颜色分行贴图（支持粘贴）；可勾选一行作为默认主图。入仓管理输入 SPUID 会自动带出名称。"
+        description="每个 SPUID 登记名称，并按颜色分行贴图（支持粘贴）。未手动指定时，自动取第一张录入的图片作为默认主图。入仓管理输入 SPUID 会自动带出名称。"
       />
 
       {/* SPUID 登记 + 按颜色挂图（合一） */}
@@ -277,7 +285,7 @@ export function ImageLibraryPage() {
             <Save className="size-4 text-primary" />
             SPUID 信息登记与图片
             <span className="text-xs font-normal text-muted-foreground">
-              可只登记名称；图片按颜色分行贴（可粘贴 / 选择），勾选一行作为默认主图
+              可只登记名称；图片按颜色分行贴（可粘贴 / 选择），不勾选则自动取第一张录入的图作为默认主图
             </span>
           </div>
 
@@ -455,8 +463,8 @@ export function ImageLibraryPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
               {defaultRowKey
-                ? "已选一行为默认主图：其他模块按 SPUID/颜色匹配不到图时用它兜底"
-                : "未选默认主图时，SPU 主图保持不变（新登记默认取第一行）"}
+                ? "已手动指定默认主图：其他模块按 SPUID / 颜色匹配不到图时用它兜底"
+                : "未手动指定时，自动取第一张录入的图片作为默认主图"}
             </p>
             <Button onClick={() => void saveReg()} disabled={regSaving} className="min-w-[104px]">
               {regSaving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
