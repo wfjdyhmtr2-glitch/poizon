@@ -62,6 +62,11 @@ create table if not exists public.market_snapshots (
   created_at    timestamptz not null default now()
 );
 
+-- 老库升级：表可能已存在而没有后来新增的列，**建索引之前必须先补齐**，
+-- 否则 create index 会因为「column does not exist」直接报错中断整个脚本。
+alter table if exists public.market_snapshots add column if not exists owner_id uuid;
+alter table if exists public.market_snapshots add column if not exists scope text not null default 'brand';
+
 create unique index if not exists market_snapshots_key
   on public.market_snapshots (owner_id, sku, snapshot_date);
 create index if not exists market_snapshots_date_idx  on public.market_snapshots (snapshot_date desc);
