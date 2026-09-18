@@ -21,6 +21,7 @@ import type {
   SalesOrder,
   SpuMapping,
 } from "./types"
+import { MARKET_OVERALL_SKU } from "./types"
 
 const DATA_KEY = "yunguan.demo.products.v1"
 const SALES_KEY = "yunguan.demo.sales.v1"
@@ -319,6 +320,7 @@ function buildDemoMarket(): MarketSnapshot[] {
       const wave = Math.round(Math.sin((step + i * 2) / 3) * 14)
       rows.push({
         id: `demo-market-${i}-${date}`,
+        scope: "brand",
         snapshot_date: date,
         sku: `MK-${String(i + 1).padStart(3, "0")}`,
         brand: brands[i % brands.length],
@@ -326,6 +328,17 @@ function buildDemoMarket(): MarketSnapshot[] {
         sales: 4 + ((i * 5 + step * 2) % 19),
         favorites: base + growth + wave,
       })
+    })
+    // 每天再补一条「大盘」数据：平台整体表现
+    rows.push({
+      id: `demo-market-overall-${date}`,
+      scope: "overall",
+      snapshot_date: date,
+      sku: MARKET_OVERALL_SKU,
+      brand: null,
+      name: "大盘（平台整体）",
+      sales: 900 + step * 26 + Math.round(Math.sin(step / 4) * 60),
+      favorites: 52000 + step * 310 + Math.round(Math.sin(step / 5) * 900),
     })
   }
   return rows
@@ -361,7 +374,9 @@ function writeMarketStore(rows: MarketSnapshot[]) {
 function filterMarket(rows: MarketSnapshot[], query: MarketQuery): MarketSnapshot[] {
   const brands = query.brands?.length ? new Set(query.brands) : null
   const keyword = query.keyword?.trim().toLowerCase() ?? ""
+  const scope = query.scope ?? "brand"
   return rows.filter((r) => {
+    if ((r.scope ?? "brand") !== scope) return false
     if (query.start && r.snapshot_date < query.start) return false
     if (query.end && r.snapshot_date > query.end) return false
     if (brands && !brands.has((r.brand ?? "").trim() || "未标注")) return false
@@ -1202,6 +1217,7 @@ export function createDemoBackend(): Backend {
     async listMarketBrands() {
       const skusByBrand = new Map<string, Set<string>>()
       for (const r of readMarketStore()) {
+        if ((r.scope ?? "brand") !== "brand") continue
         const brand = (r.brand ?? "").trim() || "未标注"
         const set = skusByBrand.get(brand) ?? new Set<string>()
         set.add(r.sku)
@@ -1285,6 +1301,7 @@ export function createDemoBackend(): Backend {
         const at = index.get(key)
         const row: MarketSnapshot = {
           id: at === undefined ? uid() : rows[at].id,
+          scope: d.scope ?? "brand",
           snapshot_date: d.snapshot_date,
           sku: d.sku,
           brand: d.brand ?? null,

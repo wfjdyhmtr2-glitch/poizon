@@ -720,6 +720,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
       const { data, error } = await client().rpc("market_overview", {
         p_start: query.start ?? null,
         p_end: query.end ?? null,
+        p_scope: query.scope ?? "brand",
       })
       if (error) throw new BackendError(translateDbError(error.message))
       const row = ((data ?? []) as Record<string, unknown>[])[0] ?? {}
@@ -738,6 +739,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
         p_brands: query.brands?.length ? query.brands : null,
         p_keyword: query.keyword?.trim() || null,
         p_limit: query.limit ?? 60,
+        p_scope: query.scope ?? "brand",
       })
       if (error) throw new BackendError(translateDbError(error.message))
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
@@ -795,6 +797,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
       let failed = 0
       for (let i = 0; i < drafts.length; i += SIZE) {
         const chunk = drafts.slice(i, i + SIZE).map((d) => ({
+          scope: d.scope ?? "brand",
           snapshot_date: d.snapshot_date,
           sku: d.sku,
           brand: d.brand ?? null,

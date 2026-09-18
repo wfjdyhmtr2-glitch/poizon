@@ -611,9 +611,34 @@ async function main() {
   )
   console.log("  含时间范围筛选:", marketText.includes("近 7 天") && marketText.includes("近 90 天"))
   console.log("  含指标切换:", marketText.includes("收藏趋势") && marketText.includes("销量趋势"))
+  console.log(
+    "  含大盘 / 品牌两个 Tab:",
+    marketText.includes("大盘数据") && marketText.includes("品牌数据"),
+  )
   console.log("  有演示市场数据:", marketText.includes("MK-001"))
   console.log("  含机会排行:", marketText.includes("机会排行"))
   await shot("08f-market")
+
+  console.log("  — 切到「大盘数据」Tab —")
+  const toOverall = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '大盘数据');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点大盘:", toOverall)
+  await sleep(2400)
+  const overallText = await bodyText()
+  console.log("  大盘内容已切换:", overallText.includes("大盘区间汇总"))
+  console.log("  大盘曲线已加载:", overallText.includes("正在对比"))
+  await shot("08f1-market-overall")
+
+  console.log("  — 切回「品牌数据」Tab —")
+  const toBrand = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '品牌数据');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点品牌:", toBrand)
+  await sleep(2400)
+  console.log("  品牌 Tab 已恢复:", (await bodyText()).includes("机会排行"))
 
   console.log("  — 加入曲线对比 —")
   const addCurve = await evaluate(`(() => {

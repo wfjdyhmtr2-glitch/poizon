@@ -403,7 +403,16 @@ export interface SalesImportRow {
 /* ============================ 市场数据（选品参考）============================ */
 
 /**
- * 市场快照：定时抓取的「非本店」公开数据（品牌维度的销量、收藏数），
+ * 市场数据的口径：
+ * - `overall`：大盘数据（平台整体）
+ * - `brand`：品牌 / 单商品数据
+ *
+ * 导入时按表格里的「标签」列自动归类，页面上分两个 Tab 展示。
+ */
+export type MarketScope = "overall" | "brand"
+
+/**
+ * 市场快照：定时抓取的「非本店」公开数据（销量、收藏数），
  * 用来判断哪些品还有销售机会。
  *
  * 一个商品一天一条记录；`(owner_id, sku, snapshot_date)` 唯一，
@@ -411,9 +420,11 @@ export interface SalesImportRow {
  */
 export interface MarketSnapshot {
   id: string
+  /** 大盘 / 品牌 */
+  scope: MarketScope
   /** 数据日期 YYYY-MM-DD */
   snapshot_date: string
-  /** 商品 SPUID */
+  /** 商品 SPUID；大盘数据没有具体商品时用 `__OVERALL__` */
   sku: string
   brand: string | null
   name: string | null
@@ -424,6 +435,8 @@ export interface MarketSnapshot {
 }
 
 export interface MarketSnapshotDraft {
+  /** 不带时按品牌数据处理 */
+  scope?: MarketScope
   snapshot_date: string
   sku: string
   brand?: string | null
@@ -432,8 +445,12 @@ export interface MarketSnapshotDraft {
   favorites?: number | null
 }
 
+/** 大盘数据没有具体商品，统一用这个哨兵 SPUID */
+export const MARKET_OVERALL_SKU = "__OVERALL__"
+
 /** 筛选条件（排行与概览共用） */
 export interface MarketQuery {
+  scope?: MarketScope
   brands?: string[]
   keyword?: string
   /** 起始日期 YYYY-MM-DD */
@@ -489,11 +506,24 @@ export const MARKET_IMPORT_COLUMNS: {
   required?: boolean
   hint: string
 }[] = [
+  {
+    header: "标签",
+    key: "scope",
+    hint: "填「大盘」或「品牌」，决定这条数据进哪个 Tab；不填按品牌处理",
+  },
   { header: "日期", key: "snapshot_date", required: true, hint: "2026-09-18 这种格式" },
-  { header: "SPUID", key: "sku", required: true, hint: "商品编号，重复导入会覆盖同一天" },
+  { header: "SPUID", key: "sku", hint: "商品编号；大盘数据可以留空" },
   { header: "品牌", key: "brand", hint: "如 Nike / 阿迪达斯" },
   { header: "商品名称", key: "name", hint: "便于识别" },
   { header: "销量", key: "sales", hint: "平台销量（件或金额都行）" },
   { header: "收藏数", key: "favorites", hint: "该商品当前收藏数" },
 ]
+
+/** 把导入表格里的「标签」文字归一化成口径；认不出来按品牌处理 */
+export function normalizeMarketScope(raw: unknown): MarketScope {
+  const text = String(raw ?? "").trim().toLowerCase()
+  if (!text) return "brand"
+  if (/大盘|整体|平台|全部|overall|total|all/.test(text)) return "overall"
+  return "brand"
+}
 

@@ -40,11 +40,13 @@ create table if not exists public.other_expenses (
 create index if not exists other_expenses_date_idx  on public.other_expenses (expense_date desc);
 create index if not exists other_expenses_owner_idx on public.other_expenses (owner_id);
 
--- ---------- 市场快照（选品参考：品牌销量 / 收藏数，非本店数据）----------
+-- ---------- 市场快照（选品参考：大盘 / 品牌 两个维度的销量与收藏数）----------
+-- scope：'overall' = 大盘数据（平台整体），'brand' = 品牌 / 单商品数据
 -- (owner_id, sku, snapshot_date) 唯一 → 同一天重复导入是覆盖，不是堆叠
 create table if not exists public.market_snapshots (
   id            uuid primary key default gen_random_uuid(),
   owner_id      uuid,
+  scope         text not null default 'brand',
   snapshot_date date not null,
   sku           text not null,
   brand         text,
@@ -59,6 +61,7 @@ create unique index if not exists market_snapshots_key
 create index if not exists market_snapshots_date_idx  on public.market_snapshots (snapshot_date desc);
 create index if not exists market_snapshots_brand_idx on public.market_snapshots (brand);
 create index if not exists market_snapshots_sku_idx   on public.market_snapshots (sku);
+create index if not exists market_snapshots_scope_idx on public.market_snapshots (scope, snapshot_date desc);
 
 -- 1) 商品表补齐后来新增的字段
 alter table public.products
@@ -462,6 +465,8 @@ alter table public.product_images       add column if not exists owner_id uuid;
 alter table public.purchase_orders      add column if not exists owner_id uuid;
 alter table public.purchase_order_items add column if not exists owner_id uuid;
 alter table public.other_expenses       add column if not exists owner_id uuid;
+alter table public.market_snapshots     add column if not exists owner_id uuid;
+alter table public.market_snapshots     add column if not exists scope text not null default 'brand';
 
 -- 存量数据归属管理员
 update public.products              set owner_id = (select id from auth.users where lower(email) = lower('shuo@dewu.com') limit 1) where owner_id is null;
@@ -503,6 +508,10 @@ create trigger spu_info_set_owner before insert on public.spu_info
 
 drop trigger if exists other_expenses_set_owner on public.other_expenses;
 create trigger other_expenses_set_owner before insert on public.other_expenses
+  for each row execute function public.set_owner_id();
+
+drop trigger if exists market_snapshots_set_owner on public.market_snapshots;
+create trigger market_snapshots_set_owner before insert on public.market_snapshots
   for each row execute function public.set_owner_id();
 
 -- 策略：团队共享——所有成员可读可写（查看 / 录入 / 编辑 / 导入），删除仅限管理员。
@@ -564,7 +573,8 @@ create policy "product_images_auth_delete" on storage.objects
 -- 这是「商品再多、日期再多也不卡」的关键。
 -- 这几个函数是 security invoker（默认），所以 RLS 照常生效。
 
--- 品牌清单（附带每个品牌下的商品数），用于筛选下拉
+-- 品牌清单（附带每个品牌下的商品数），用于品牌页的筛选下拉
+drop function if exists public.market_brands();
 create or replace function public.market_brands()
 returns table (brand text, sku_count integer)
 language sql
@@ -574,14 +584,17 @@ as $$
   select coalesce(nullif(trim(m.brand), ''), '未标注') as brand,
          count(distinct m.sku)::integer as sku_count
     from public.market_snapshots m
+   where m.scope = 'brand'
    group by 1
    order by 2 desc;
 $$;
 
--- 数据概览：覆盖多少商品、多少天、最新日期、总记录数
+-- 数据概览：按「大盘 / 品牌」分别统计覆盖多少商品、多少天、最新日期、总记录数
+drop function if exists public.market_overview(date, date);
 create or replace function public.market_overview(
   p_start date default null,
-  p_end   date default null
+  p_end   date default null,
+  p_scope text default 'brand'
 )
 returns table (sku_count integer, day_count integer, latest_date date, snapshot_count integer)
 language sql
@@ -593,17 +606,20 @@ as $$
          max(m.snapshot_date),
          count(*)::integer
     from public.market_snapshots m
-   where (p_start is null or m.snapshot_date >= p_start)
+   where m.scope = coalesce(nullif(p_scope, ''), 'brand')
+     and (p_start is null or m.snapshot_date >= p_start)
      and (p_end   is null or m.snapshot_date <= p_end);
 $$;
 
 -- 机会排行：区间内每个商品的销量合计 + 收藏增量，按收藏增量排序
+drop function if exists public.market_ranking(date, date, text[], text, integer);
 create or replace function public.market_ranking(
   p_start   date    default null,
   p_end     date    default null,
   p_brands  text[]  default null,
   p_keyword text    default null,
-  p_limit   integer default 50
+  p_limit   integer default 50,
+  p_scope   text    default 'brand'
 )
 returns table (
   sku              text,
@@ -627,7 +643,8 @@ as $$
            (array_agg(coalesce(m.favorites, 0) order by m.snapshot_date desc))[1] as fav_last,
            count(*)::integer as points
       from public.market_snapshots m
-     where (p_start is null or m.snapshot_date >= p_start)
+     where m.scope = coalesce(nullif(p_scope, ''), 'brand')
+       and (p_start is null or m.snapshot_date >= p_start)
        and (p_end   is null or m.snapshot_date <= p_end)
        and (p_brands is null
             or coalesce(nullif(trim(m.brand), ''), '未标注') = any(p_brands))

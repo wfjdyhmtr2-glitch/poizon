@@ -53,9 +53,11 @@ import { DateInput } from "@/components/DateInput"
 import { ErrorBlock, LoadingBlock, PageHeader, StatCard } from "@/components/common"
 import { useApp } from "@/contexts/AppContext"
 import { formatCompact } from "@/lib/format"
+import { MARKET_OVERALL_SKU, normalizeMarketScope } from "@/lib/types"
 import type {
   MarketOverview,
   MarketRankRow,
+  MarketScope,
   MarketSnapshotDraft,
   MarketTrendSeries,
 } from "@/lib/types"
@@ -90,6 +92,7 @@ function todayISO() {
 /* -------------------- 导入解析：表头做模糊匹配，容忍各种写法 -------------------- */
 
 const HEADER_MAP: { keys: string[]; field: keyof MarketSnapshotDraft }[] = [
+  { keys: ["标签", "数据类型", "类型", "口径", "scope", "type"], field: "scope" },
   { keys: ["日期", "统计日期", "date", "snapshot", "数据日期"], field: "snapshot_date" },
   { keys: ["spuid", "sku", "商品编号", "商品id", "货号"], field: "sku" },
   { keys: ["品牌", "brand", "brandname"], field: "brand" },
@@ -150,16 +153,23 @@ function parseSheet(rows: Record<string, unknown>[]) {
   rows.forEach((row, i) => {
     const lineNo = i + 2
     const date = normalizeDate(fieldOf(row, "snapshot_date"))
-    const sku = String(fieldOf(row, "sku") ?? "").trim()
     if (!date) {
       errors.push(`第 ${lineNo} 行：日期无法识别`)
       return
     }
+    const scope = normalizeMarketScope(fieldOf(row, "scope"))
+    let sku = String(fieldOf(row, "sku") ?? "").trim()
     if (!sku) {
-      errors.push(`第 ${lineNo} 行：SPUID 为空`)
-      return
+      if (scope === "overall") {
+        // 大盘数据没有具体商品，用哨兵 SPUID 占位，保证同一天能覆盖
+        sku = MARKET_OVERALL_SKU
+      } else {
+        errors.push(`第 ${lineNo} 行：品牌数据缺少 SPUID`)
+        return
+      }
     }
     drafts.push({
+      scope,
       snapshot_date: date,
       sku,
       brand: String(fieldOf(row, "brand") ?? "").trim() || null,
@@ -183,6 +193,7 @@ export function MarketPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const [scope, setScope] = useState<MarketScope>("brand")
   const [preset, setPreset] = useState<RangePreset>("30")
   const [customStart, setCustomStart] = useState(dateOffset(30))
   const [customEnd, setCustomEnd] = useState(todayISO())
@@ -205,14 +216,20 @@ export function MarketPage() {
 
   const query = useMemo(
     () => ({
+      scope,
       start: range.start,
       end: range.end,
-      brands: brand === "__all__" ? undefined : [brand],
+      brands: scope === "brand" && brand !== "__all__" ? [brand] : undefined,
       keyword: applied.keyword || undefined,
       limit: 60,
     }),
-    [range.start, range.end, brand, applied.keyword],
+    [scope, range.start, range.end, brand, applied.keyword],
   )
+
+  // 切 Tab 时重置对比：大盘本来就只有一条，品牌则从空白开始挑
+  useEffect(() => {
+    setCompare(scope === "overall" ? [MARKET_OVERALL_SKU] : [])
+  }, [scope])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -376,14 +393,34 @@ export function MarketPage() {
         }
       />
 
+      <div className="flex gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant={scope === "overall" ? "default" : "outline"}
+          onClick={() => setScope("overall")}
+        >
+          大盘数据
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={scope === "brand" ? "default" : "outline"}
+          onClick={() => setScope("brand")}
+        >
+          品牌数据
+        </Button>
+      </div>
+
       {!hasData ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
             <LineChartIcon className="size-8 text-muted-foreground" />
             <p className="font-medium">还没有市场数据</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              点右上角「导入数据」上传你抓下来的表格，或直接粘贴。 需要的列：日期、SPUID，以及品牌 /
-              商品名称 / 销量 / 收藏数中的任意几列（表头写得不一样也能认）。
+              点右上角「导入数据」上传你抓下来的表格，或直接粘贴。 需要的列：标签、日期，
+              以及 SPUID / 品牌 / 商品名称 / 销量 / 收藏数中的任意几列（表头写得不一样也能认）。
+              「标签」填「大盘」或「品牌」，导入后会自动分到对应的 Tab。
             </p>
             <Button className="mt-1" onClick={() => setImportOpen(true)}>
               <Upload className="size-4" />
@@ -457,22 +494,24 @@ export function MarketPage() {
                   </div>
                 ) : null}
               </div>
-              <div className="space-y-1.5">
-                <Label>品牌</Label>
-                <Select value={brand} onValueChange={setBrand}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">全部品牌</SelectItem>
-                    {brands.map((b) => (
-                      <SelectItem key={b.brand} value={b.brand}>
-                        {b.brand}（{b.skuCount}）
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {scope === "brand" ? (
+                <div className="space-y-1.5">
+                  <Label>品牌</Label>
+                  <Select value={brand} onValueChange={setBrand}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">全部品牌</SelectItem>
+                      {brands.map((b) => (
+                        <SelectItem key={b.brand} value={b.brand}>
+                          {b.brand}（{b.skuCount}）
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
               <div className="space-y-1.5">
                 <Label htmlFor="market-keyword">搜索商品</Label>
                 <div className="flex gap-2">
@@ -596,11 +635,13 @@ export function MarketPage() {
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">机会排行</CardTitle>
+              <CardTitle className="text-base">
+                {scope === "brand" ? "机会排行" : "大盘区间汇总"}
+              </CardTitle>
               <CardDescription>
-                按「收藏增量」排序（区间内最后一天 − 第一天）。
-                收藏涨得快、但销量还不高的品，通常就是还没被抢的机会。
-                最多显示 60 行——再多也不会一次全拉下来。
+                {scope === "brand"
+                  ? "按「收藏增量」排序（区间内最后一天 − 第一天）。收藏涨得快、但销量还不高的品，通常就是还没被抢的机会。最多显示 60 行。"
+                  : "平台整体的区间表现——先看大环境是变好还是变冷，再回到「品牌数据」里挑具体的品。"}
               </CardDescription>
             </CardHeader>
             <CardContent className="p-0">
@@ -692,9 +733,10 @@ export function MarketPage() {
             <DialogTitle>导入市场数据</DialogTitle>
             <DialogDescription>
               支持 .xlsx / .xls / .csv，首行是表头。需要的列：
-              <strong> 日期、SPUID</strong>，以及 品牌 / 商品名称 / 销量 / 收藏数 中的任意几列。
-              表头写法不一样也能认（如「收藏」「favorites」都行）。
-              同一天同一个 SPUID 重复导入会<strong>覆盖</strong>，不会重复累加。
+              <strong> 标签、日期</strong>，以及 SPUID / 品牌 / 商品名称 / 销量 / 收藏数 中的任意几列。
+              「标签」填 <strong>大盘</strong> 或 <strong>品牌</strong>，决定这条数据进哪个 Tab；
+              大盘数据可以不填 SPUID。表头写法不一样也能认（如「收藏」「favorites」都行）。
+              同一天同一条重复导入会<strong>覆盖</strong>，不会重复累加。
             </DialogDescription>
           </DialogHeader>
 
