@@ -9,6 +9,8 @@ import type {
   MemberRole,
   OtherExpense,
   OtherExpenseDraft,
+  PriceCapture,
+  PriceCaptureDraft,
   Product,
   ProductDraft,
   ProductImage,
@@ -131,6 +133,15 @@ export interface Backend {
   importMarketSnapshots(
     drafts: MarketSnapshotDraft[],
   ): Promise<{ inserted: number; updated: number; failed: number }>
+
+  /* ---------- 价格采集（竞品比价，书签一键记录）---------- */
+  listPriceCaptures(query?: {
+    platform?: string
+    keyword?: string
+    limit?: number
+  }): Promise<PriceCapture[]>
+  createPriceCapture(draft: PriceCaptureDraft): Promise<PriceCapture>
+  deletePriceCaptures(ids: string[]): Promise<void>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean

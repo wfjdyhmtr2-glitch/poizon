@@ -10,6 +10,8 @@ import type {
   MarketTrendSeries,
   MemberRole,
   OtherExpense,
+  PriceCapture,
+  PriceCaptureDraft,
   Product,
   ProductImage,
   ProductListResult,
@@ -37,6 +39,8 @@ const MEMBER_KEY = "yunguan.demo.members.v1"
 const MEMBER_SEEDED_KEY = "yunguan.demo.members-seeded.v1"
 const MARKET_KEY = "yunguan.demo.market.v1"
 const MARKET_SEEDED_KEY = "yunguan.demo.market-seeded.v1"
+const PRICE_KEY = "yunguan.demo.price-captures.v1"
+const PRICE_SEEDED_KEY = "yunguan.demo.price-captures-seeded.v1"
 const SESSION_KEY = "yunguan.demo.session.v1"
 
 const DEMO_ACCOUNT = { email: "admin@demo.com", password: "admin888" }
@@ -386,6 +390,57 @@ function filterMarket(rows: MarketSnapshot[], query: MarketQuery): MarketSnapsho
     }
     return true
   })
+}
+
+/* ---------------- 演示：价格采集（竞品比价）---------------- */
+
+function buildDemoPriceCaptures(): PriceCapture[] {
+  const now = new Date().toISOString()
+  const day = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10)
+  const rows: [string, string, number, string, number][] = [
+    ["京东", "Nike Air Force 1 低帮 白色", 619, "MK-001", 1],
+    ["拼多多", "Nike 空军一号 低帮 白", 459, "MK-001", 2],
+    ["京东", "adidas Samba OG 黑白", 799, "MK-002", 3],
+    ["拼多多", "adidas Samba 经典款", 528, "MK-002", 4],
+    ["京东", "New Balance 574 元祖灰", 699, "MK-003", 5],
+  ]
+  return rows.map(([platform, title, price, sku, back], i) => ({
+    id: `demo-price-${i + 1}`,
+    platform,
+    title,
+    price,
+    source_url: null,
+    sku,
+    note: null,
+    captured_at: day(back),
+    created_at: now,
+  }))
+}
+
+function readPriceStore(): PriceCapture[] {
+  try {
+    const raw = localStorage.getItem(PRICE_KEY)
+    if (raw) return JSON.parse(raw) as PriceCapture[]
+    if (localStorage.getItem(PRICE_SEEDED_KEY)) return []
+  } catch {
+    /* ignore */
+  }
+  const seeded = buildDemoPriceCaptures()
+  try {
+    localStorage.setItem(PRICE_KEY, JSON.stringify(seeded))
+    localStorage.setItem(PRICE_SEEDED_KEY, "1")
+  } catch {
+    /* ignore */
+  }
+  return seeded
+}
+
+function writePriceStore(rows: PriceCapture[]) {
+  try {
+    localStorage.setItem(PRICE_KEY, JSON.stringify(rows))
+  } catch {
+    throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
+  }
 }
 
 /* ---------------- 演示：入仓单（采购订单）存储 ---------------- */
@@ -1320,6 +1375,47 @@ export function createDemoBackend(): Backend {
       }
       writeMarketStore(rows)
       return { inserted, updated, failed: 0 }
+    },
+
+    /* ---------- 价格采集（竞品比价，书签一键记录）---------- */
+
+    async listPriceCaptures(query) {
+      const platform = query?.platform ?? ""
+      const keyword = query?.keyword?.trim().toLowerCase() ?? ""
+      return readPriceStore()
+        .filter((r) => (platform ? r.platform === platform : true))
+        .filter((r) =>
+          keyword ? `${r.title} ${r.sku ?? ""}`.toLowerCase().includes(keyword) : true,
+        )
+        .sort((a, b) => {
+          if (a.captured_at !== b.captured_at) return a.captured_at < b.captured_at ? 1 : -1
+          return a.created_at < b.created_at ? 1 : -1
+        })
+        .slice(0, query?.limit ?? 200)
+    },
+
+    async createPriceCapture(draft: PriceCaptureDraft) {
+      const title = draft.title.trim()
+      if (!title) throw new BackendError("商品名称不能为空")
+      const now = new Date().toISOString()
+      const row: PriceCapture = {
+        id: uid(),
+        platform: draft.platform?.trim() || null,
+        title,
+        price: draft.price ?? null,
+        source_url: draft.source_url?.trim() || null,
+        sku: draft.sku?.trim() || null,
+        note: draft.note?.trim() || null,
+        captured_at: draft.captured_at || now.slice(0, 10),
+        created_at: now,
+      }
+      writePriceStore([row, ...readPriceStore()])
+      return row
+    },
+
+    async deletePriceCaptures(ids) {
+      const set = new Set(ids)
+      writePriceStore(readPriceStore().filter((r) => !set.has(r.id)))
     },
 
     supportsUpload: true,

@@ -32,6 +32,9 @@ const OtherExpensesPage = lazy(() =>
 )
 const TeamPage = lazy(() => import("@/pages/TeamPage").then((m) => ({ default: m.TeamPage })))
 const MarketPage = lazy(() => import("@/pages/MarketPage").then((m) => ({ default: m.MarketPage })))
+const PriceCapturePage = lazy(() =>
+  import("@/pages/PriceCapturePage").then((m) => ({ default: m.PriceCapturePage })),
+)
 
 function Splash({ label = "正在准备工作台…" }: { label?: string }) {
   return (
@@ -123,6 +126,16 @@ function AppRoutes() {
           <Protected>
             <Suspense fallback={<PageFallback />}>
               <MarketPage />
+            </Suspense>
+          </Protected>
+        }
+      />
+      <Route
+        path="/capture"
+        element={
+          <Protected>
+            <Suspense fallback={<PageFallback />}>
+              <PriceCapturePage />
             </Suspense>
           </Protected>
         }

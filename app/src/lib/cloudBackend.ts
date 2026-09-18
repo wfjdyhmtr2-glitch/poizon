@@ -12,6 +12,8 @@ import type {
   MarketTrendSeries,
   MemberRole,
   OtherExpense,
+  PriceCapture,
+  PriceCaptureDraft,
   Product,
   SpuInfo,
   ProductImage,
@@ -111,6 +113,24 @@ async function callAdminUsers(
 ): Promise<void> {
   const { error } = await client.functions.invoke("admin-users", { body })
   if (error) throw new BackendError(await describeFunctionError(error))
+}
+
+const PRICE_CAPTURE_COLUMNS =
+  "id,captured_at,platform,title,price,source_url,sku,note,created_at"
+
+/** 价格采集行归一化 */
+function normalizePriceCapture(row: Record<string, unknown>): PriceCapture {
+  return {
+    id: String(row.id),
+    platform: row.platform ? String(row.platform) : null,
+    title: String(row.title ?? ""),
+    price: nullableNumber(row.price),
+    source_url: row.source_url ? String(row.source_url) : null,
+    sku: row.sku ? String(row.sku) : null,
+    note: row.note ? String(row.note) : null,
+    captured_at: String(row.captured_at ?? "").slice(0, 10),
+    created_at: String(row.created_at ?? ""),
+  }
 }
 
 /** 关键字里可能破坏 PostgREST 查询语法的字符，先剔除 */
@@ -811,6 +831,49 @@ export function createCloudBackend(config: CloudConfig): Backend {
         if (error) failed += chunk.length
       }
       return { inserted: drafts.length - failed, updated: 0, failed }
+    },
+
+    /* ---------- 价格采集（竞品比价，书签一键记录）---------- */
+
+    async listPriceCaptures(query) {
+      let q = client()
+        .from("price_captures")
+        .select(PRICE_CAPTURE_COLUMNS)
+        .order("captured_at", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(query?.limit ?? 200)
+      if (query?.platform) q = q.eq("platform", query.platform)
+      const keyword = sanitizeKeyword(query?.keyword?.trim() ?? "")
+      if (keyword) q = q.or(`title.ilike.%${keyword}%,sku.ilike.%${keyword}%`)
+      const { data, error } = await q
+      if (error) throw new BackendError(translateDbError(error.message))
+      return (data ?? []).map((r) => normalizePriceCapture(r as Record<string, unknown>))
+    },
+
+    async createPriceCapture(draft: PriceCaptureDraft) {
+      const title = draft.title.trim()
+      if (!title) throw new BackendError("商品名称不能为空")
+      const { data, error } = await client()
+        .from("price_captures")
+        .insert({
+          captured_at: draft.captured_at || new Date().toISOString().slice(0, 10),
+          platform: draft.platform?.trim() || null,
+          title,
+          price: draft.price ?? null,
+          source_url: draft.source_url?.trim() || null,
+          sku: draft.sku?.trim() || null,
+          note: draft.note?.trim() || null,
+        })
+        .select(PRICE_CAPTURE_COLUMNS)
+        .single()
+      if (error) throw new BackendError(translateDbError(error.message))
+      return normalizePriceCapture(data as Record<string, unknown>)
+    },
+
+    async deletePriceCaptures(ids) {
+      if (!ids.length) return
+      const { error } = await client().from("price_captures").delete().in("id", ids)
+      if (error) throw new BackendError(translateDbError(error.message))
     },
 
     supportsUpload: true,

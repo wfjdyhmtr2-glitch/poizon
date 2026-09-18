@@ -663,6 +663,37 @@ async function main() {
   console.log("  结果已按关键词收窄:", filtered.includes("MK-003") && !filtered.includes("MK-005"))
   await shot("08f3-market-search")
 
+  console.log("\n=== 8g. 价格采集（书签一键记竞品价）===")
+  await goto(`${BASE}/#/capture`, 2400)
+  const capText = await bodyText()
+  console.log("  页面标题:", (await text("h1")) || "(空)")
+  console.log("  含录入表单:", capText.includes("记一条价格") && capText.includes("到手价"))
+  console.log("  含采集记录:", capText.includes("采集记录"))
+  console.log("  有演示采集数据:", capText.includes("京东") && capText.includes("拼多多"))
+  await shot("08g-capture")
+
+  console.log("  — 模拟书签传参（自动填表）—")
+  await goto(
+    `${BASE}/#/capture?auto=1&title=${encodeURIComponent("书签测试商品")}&price=888&platform=${encodeURIComponent("京东")}`,
+    2600,
+  )
+  const filledTitle = await evaluate(`document.querySelector('#cap-title')?.value ?? ''`)
+  const filledPrice = await evaluate(`document.querySelector('#cap-price')?.value ?? ''`)
+  console.log("  已回填商品名:", filledTitle.includes("书签测试商品"))
+  console.log("  已回填价格:", filledPrice === "888")
+  await shot("08g2-capture-filled")
+
+  console.log("  — 保存这条记录 —")
+  const saved = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '保存记录');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点保存:", saved)
+  await sleep(1800)
+  await dismissToasts()
+  console.log("  记录已出现:", (await bodyText()).includes("书签测试商品"))
+  await shot("08g3-capture-saved")
+
   console.log("\n=== 9. 销售看板 ===")
   await viewport(1440, 900)
   await goto(`${BASE}/#/sales`, 2600)

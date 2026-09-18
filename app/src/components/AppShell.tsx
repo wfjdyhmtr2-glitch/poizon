@@ -18,6 +18,7 @@ import {
   Settings,
   ShoppingBag,
   Sun,
+  Tag,
   Target,
   TrendingUp,
   Upload,
@@ -64,6 +65,7 @@ const NAV_GROUPS: {
       { to: "/dashboard", label: "数据看板", icon: BarChart3, hint: "商品与库存概览" },
       { to: "/sales", label: "销售看板", icon: TrendingUp, hint: "成交、退款与收入" },
       { to: "/market", label: "市场机会", icon: Target, hint: "收藏与销量趋势选品" },
+      { to: "/capture", label: "价格采集", icon: Tag, hint: "书签一键记竞品价" },
     ],
   },
   {

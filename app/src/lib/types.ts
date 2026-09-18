@@ -527,3 +527,44 @@ export function normalizeMarketScope(raw: unknown): MarketScope {
   return "brand"
 }
 
+/* ============================ 价格采集（竞品比价）============================ */
+
+/**
+ * 价格采集：用浏览器书签在京东 / 拼多多商品页一键记下来的到手价。
+ *
+ * 为什么不自动抓：两个平台都没有公开的比价接口，网页又有强风控
+ * （实测无头浏览器会被直接拦掉、拼多多还强制登录）。
+ * 所以走「人工触发 + 自动记录」——你看的是自己打开的页面，
+ * 完全合规，也不会触发风控。配合历史记录还能看出价格走势。
+ */
+export interface PriceCapture {
+  id: string
+  /** 平台：京东 / 拼多多 / 淘宝 … */
+  platform: string | null
+  /** 商品名称 */
+  title: string
+  /** 到手价 */
+  price: number | null
+  /** 商品页地址 */
+  source_url: string | null
+  /** 关联自家 SPUID（可选） */
+  sku: string | null
+  note: string | null
+  /** 采集日期 YYYY-MM-DD */
+  captured_at: string
+  created_at: string
+}
+
+export interface PriceCaptureDraft {
+  platform?: string | null
+  title: string
+  price?: number | null
+  source_url?: string | null
+  sku?: string | null
+  note?: string | null
+  captured_at?: string
+}
+
+/** 采集时可选平台 */
+export const CAPTURE_PLATFORMS = ["京东", "拼多多", "淘宝", "天猫", "1688", "抖音", "得物", "其他"]
+

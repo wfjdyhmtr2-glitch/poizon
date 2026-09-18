@@ -68,6 +68,29 @@ create index if not exists market_snapshots_brand_idx on public.market_snapshots
 create index if not exists market_snapshots_sku_idx   on public.market_snapshots (sku);
 create index if not exists market_snapshots_scope_idx on public.market_snapshots (scope, snapshot_date desc);
 
+-- ---------- 价格采集（竞品比价：浏览器书签一键记录）----------
+-- 平台没有公开的比价接口，所以走「人工触发 + 自动记录」：
+-- 用户在商品页点书签，把名称/价格/链接记到这里。
+create table if not exists public.price_captures (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid,
+  captured_at  date not null default current_date,
+  platform     text,
+  title        text not null default '',
+  price        numeric(12,2),
+  source_url   text,
+  sku          text,
+  note         text,
+  created_at   timestamptz not null default now()
+);
+
+-- 老库升级：列必须先补齐，索引才能建（顺序错了会报 42703 并中断整个脚本）
+alter table if exists public.price_captures add column if not exists owner_id uuid;
+
+create index if not exists price_captures_date_idx     on public.price_captures (captured_at desc);
+create index if not exists price_captures_platform_idx on public.price_captures (platform);
+create index if not exists price_captures_sku_idx      on public.price_captures (sku);
+
 -- 1) 商品表补齐后来新增的字段
 alter table public.products
   add column if not exists purchase_platform text,
@@ -472,6 +495,7 @@ alter table public.purchase_order_items add column if not exists owner_id uuid;
 alter table public.other_expenses       add column if not exists owner_id uuid;
 alter table public.market_snapshots     add column if not exists owner_id uuid;
 alter table public.market_snapshots     add column if not exists scope text not null default 'brand';
+alter table public.price_captures       add column if not exists owner_id uuid;
 
 -- 存量数据归属管理员
 update public.products              set owner_id = (select id from auth.users where lower(email) = lower('shuo@dewu.com') limit 1) where owner_id is null;
@@ -519,6 +543,10 @@ drop trigger if exists market_snapshots_set_owner on public.market_snapshots;
 create trigger market_snapshots_set_owner before insert on public.market_snapshots
   for each row execute function public.set_owner_id();
 
+drop trigger if exists price_captures_set_owner on public.price_captures;
+create trigger price_captures_set_owner before insert on public.price_captures
+  for each row execute function public.set_owner_id();
+
 -- 策略：团队共享——所有成员可读可写（查看 / 录入 / 编辑 / 导入），删除仅限管理员。
 -- 注意：PostgreSQL 的同表多条策略之间是 OR 关系，所以必须**按操作拆分**；
 -- 若用一条 for all 覆盖，成员会连带拿到删除权。
@@ -529,7 +557,7 @@ begin
   foreach t in array array[
     'products', 'sales_orders', 'spu_mappings', 'product_images',
     'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses',
-    'market_snapshots'
+    'market_snapshots', 'price_captures'
   ]
   loop
     execute format('drop policy if exists %I on public.%I', t || '_authenticated_all', t);
