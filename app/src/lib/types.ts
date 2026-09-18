@@ -313,6 +313,35 @@ export interface OtherExpenseDraft {
   note?: string | null
 }
 
+/* ============================ 成员与角色 ============================ */
+
+/**
+ * 成员角色。
+ * - `admin`：可管理账号、可删除业务数据
+ * - `member`：只能查看与录入（不能删、不能管账号）
+ *
+ * 超管邮箱（shuo@dewu.com）永远视为 admin，且不能被降级或删除。
+ */
+export type MemberRole = "admin" | "member"
+
+/** 成员档案（即账号白名单）：不在这张表里的账号看不到任何业务数据 */
+export interface AppMember {
+  id: string
+  email: string
+  role: MemberRole
+  display_name: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** 新建账号：邮箱 + 初始密码 + 角色 */
+export interface AppMemberDraft {
+  email: string
+  password: string
+  role: MemberRole
+  display_name?: string | null
+}
+
 export interface StageSlice {
   stage: TradeStage
   label: string

@@ -209,11 +209,11 @@ returns text language sql stable as $$
     when p_sku is null or p_sku = '' then null
     when exists (
       select 1 from public.products pr
-      where pr.sku = p_sku and pr.owner_id = auth.uid()
+      where pr.sku = p_sku
     ) then p_sku
     else (
       select m.sku from public.spu_mappings m
-      where m.external_id = p_sku and m.owner_id = auth.uid() limit 1
+      where m.external_id = p_sku limit 1
     )
   end;
 $$;
@@ -252,7 +252,7 @@ begin
      set locked_stock = greatest(0, locked_stock + d_locked * p_sign),
          stock        = stock + d_stock * p_sign,
          updated_at   = now()
-   where sku = p_sku and owner_id = auth.uid();
+   where sku = p_sku;
 end;
 $$;
 
@@ -299,7 +299,7 @@ returns void language plpgsql as $$
 begin
   if p_external is null or p_external = '' then return; end if;
   -- 自赋值触发 BEFORE 解析触发器重算 resolved_sku，再由 AFTER 触发器按差额调整库存
-  update public.sales_orders set sku = sku where sku = p_external and owner_id = auth.uid();
+  update public.sales_orders set sku = sku where sku = p_external;
 end;
 $$;
 
@@ -349,7 +349,7 @@ create trigger products_refresh_orders
   for each row execute function public.refresh_orders_for_product();
 
 -- 存量订单补解析（列刚加上时 resolved_sku 全为 null，重算后会自动锁定该锁的库存）
-update public.sales_orders set sku = sku where resolved_sku is null and owner_id = auth.uid();
+update public.sales_orders set sku = sku where resolved_sku is null;
 
 -- ---------- 入仓单（采购订单维度：一单买了哪些款）----------
 create table if not exists public.purchase_orders (
@@ -457,17 +457,83 @@ values
 on conflict (sku) do nothing;
 
 
--- ---------- 访问控制与数据隔离 ----------
+-- ---------- 访问控制、成员与角色 ----------
 
--- 管理员判定：比对企业邮箱
+-- ---------- 成员表：账号白名单 + 角色 ----------
+-- 只有出现在这张表里的账号才能访问业务数据；
+-- role = 'admin' 可管理账号、可删除数据；'member' 只能查看与录入。
+create table if not exists public.app_members (
+  id           uuid primary key,
+  email        text not null default '',
+  role         text not null default 'member',
+  display_name text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint app_members_role_check check (role in ('admin', 'member'))
+);
+
+create index if not exists app_members_email_idx on public.app_members (lower(email));
+
+-- 把已有账号补录进来（超管固定为 admin），可重复执行
+insert into public.app_members (id, email, role)
+select u.id,
+       lower(u.email),
+       case when lower(u.email) = lower('shuo@dewu.com') then 'admin' else 'member' end
+  from auth.users u
+ where u.email is not null
+    on conflict (id) do nothing;
+
+-- 超管的角色永远校正回 admin
+update public.app_members
+   set role = 'admin'
+ where lower(email) = lower('shuo@dewu.com')
+   and role <> 'admin';
+
+alter table public.app_members enable row level security;
+
+-- 成员判定：必须是白名单里的账号。
+-- security definer 让函数以定义者身份读表，避免策略自引用导致无限递归。
+create or replace function public.is_member()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  select exists (select 1 from public.app_members m where m.id = auth.uid())
+$$;
+
+-- 管理员判定：超管邮箱，或成员表里 role = 'admin'
 create or replace function public.is_admin()
 returns boolean
 language sql
 stable
-set search_path = ''
+security definer
+set search_path = public, auth
 as $$
   select lower(coalesce(auth.jwt() ->> 'email', '')) = lower('shuo@dewu.com')
+      or exists (
+           select 1 from public.app_members m
+            where m.id = auth.uid() and m.role = 'admin'
+         )
 $$;
+
+-- app_members 自身：成员可读全表（页面要展示同事），仅管理员可增删改
+drop policy if exists "app_members_select" on public.app_members;
+create policy "app_members_select" on public.app_members
+  for select to authenticated using (public.is_member());
+
+drop policy if exists "app_members_insert" on public.app_members;
+create policy "app_members_insert" on public.app_members
+  for insert to authenticated with check (public.is_admin());
+
+drop policy if exists "app_members_update" on public.app_members;
+create policy "app_members_update" on public.app_members
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "app_members_delete" on public.app_members;
+create policy "app_members_delete" on public.app_members
+  for delete to authenticated using (public.is_admin());
 
 -- 数据归属：写入时自动打上创建者，存量数据归管理员
 create or replace function public.set_owner_id()
@@ -531,54 +597,38 @@ drop trigger if exists other_expenses_set_owner on public.other_expenses;
 create trigger other_expenses_set_owner before insert on public.other_expenses
   for each row execute function public.set_owner_id();
 
--- 策略：本人可见自己的数据，管理员可见全部
-drop policy if exists "products_authenticated_all" on public.products;
-create policy "products_authenticated_all" on public.products
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
+-- 策略：团队共享——所有成员可读可写（查看 / 录入 / 编辑 / 导入），删除仅限管理员。
+-- 注意：PostgreSQL 的同表多条策略之间是 OR 关系，所以必须**按操作拆分**；
+-- 若用一条 for all 覆盖，成员会连带拿到删除权。
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'products', 'sales_orders', 'spu_mappings', 'product_images',
+    'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses'
+  ]
+  loop
+    execute format('drop policy if exists %I on public.%I', t || '_authenticated_all', t);
+    execute format('drop policy if exists %I on public.%I', t || '_select', t);
+    execute format('drop policy if exists %I on public.%I', t || '_insert', t);
+    execute format('drop policy if exists %I on public.%I', t || '_update', t);
+    execute format('drop policy if exists %I on public.%I', t || '_delete', t);
 
-drop policy if exists "sales_orders_authenticated_all" on public.sales_orders;
-create policy "sales_orders_authenticated_all" on public.sales_orders
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "spu_mappings_authenticated_all" on public.spu_mappings;
-create policy "spu_mappings_authenticated_all" on public.spu_mappings
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "product_images_authenticated_all" on public.product_images;
-create policy "product_images_authenticated_all" on public.product_images
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "purchase_orders_authenticated_all" on public.purchase_orders;
-create policy "purchase_orders_authenticated_all" on public.purchase_orders
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "purchase_order_items_authenticated_all" on public.purchase_order_items;
-create policy "purchase_order_items_authenticated_all" on public.purchase_order_items
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "spu_info_authenticated_all" on public.spu_info;
-create policy "spu_info_authenticated_all" on public.spu_info
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
-
-drop policy if exists "other_expenses_authenticated_all" on public.other_expenses;
-create policy "other_expenses_authenticated_all" on public.other_expenses
-  for all to authenticated
-  using (owner_id = auth.uid() or public.is_admin())
-  with check (owner_id = auth.uid() or public.is_admin());
+    execute format(
+      'create policy %I on public.%I for select to authenticated using (public.is_member())',
+      t || '_select', t);
+    execute format(
+      'create policy %I on public.%I for insert to authenticated with check (public.is_member())',
+      t || '_insert', t);
+    execute format(
+      'create policy %I on public.%I for update to authenticated using (public.is_member()) with check (public.is_member())',
+      t || '_update', t);
+    execute format(
+      'create policy %I on public.%I for delete to authenticated using (public.is_admin())',
+      t || '_delete', t);
+  end loop;
+end $$;
 
 -- 匿名一律不可见
 drop policy if exists "products_anon_read_on_sale" on public.products;
@@ -587,15 +637,16 @@ drop policy if exists "products_anon_read_on_sale" on public.products;
 drop policy if exists "product_images_auth_insert" on storage.objects;
 create policy "product_images_auth_insert" on storage.objects
   for insert to authenticated
-  with check (bucket_id = 'product-images');
+  with check (bucket_id = 'product-images' and public.is_member());
 
 drop policy if exists "product_images_auth_update" on storage.objects;
 create policy "product_images_auth_update" on storage.objects
   for update to authenticated
-  using (bucket_id = 'product-images');
+  using (bucket_id = 'product-images' and public.is_member())
+  with check (bucket_id = 'product-images' and public.is_member());
 
 drop policy if exists "product_images_auth_delete" on storage.objects;
 create policy "product_images_auth_delete" on storage.objects
   for delete to authenticated
-  using (bucket_id = 'product-images');
+  using (bucket_id = 'product-images' and public.is_member());
 

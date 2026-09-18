@@ -5,7 +5,10 @@ import {
   type Backend,
 } from "./backend"
 import type {
+  AppMember,
+  AppMemberDraft,
   CloudConfig,
+  MemberRole,
   OtherExpense,
   Product,
   SpuInfo,
@@ -61,6 +64,51 @@ function normalizeOtherExpense(row: Record<string, unknown>): OtherExpense {
     created_at: String(row.created_at ?? ""),
     updated_at: String(row.updated_at ?? ""),
   }
+}
+
+const MEMBER_COLUMNS = "id,email,role,display_name,created_at,updated_at"
+
+/** 成员行归一化 */
+function normalizeMember(row: Record<string, unknown>): AppMember {
+  return {
+    id: String(row.id),
+    email: String(row.email ?? ""),
+    role: row.role === "admin" ? "admin" : "member",
+    display_name: row.display_name ? String(row.display_name) : null,
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+  }
+}
+
+/**
+ * Edge Function 报错时，业务错误信息在响应体里而不是 error.message。
+ * 另外函数没部署时 supabase-js 只会给一句 "Failed to send a request…"，
+ * 这里翻译成可操作的提示，避免用户对着报错发懵。
+ */
+async function describeFunctionError(error: unknown): Promise<string> {
+  const e = error as { message?: string; context?: { json?: () => Promise<unknown> } }
+  if (e?.context && typeof e.context.json === "function") {
+    try {
+      const body = (await e.context.json()) as { error?: string }
+      if (body?.error) return String(body.error)
+    } catch {
+      /* 响应体不是 JSON，走下面的通用处理 */
+    }
+  }
+  const msg = e?.message ?? String(error)
+  if (/Failed to send a request|Failed to fetch|not found|404|relay/i.test(msg)) {
+    return "账号管理服务不可用：请先在 Supabase 部署 admin-users Edge Function（步骤见 README 第八节）"
+  }
+  return msg
+}
+
+/** 调用账号管理 Edge Function，统一处理错误 */
+async function callAdminUsers(
+  client: SupabaseClient,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await client.functions.invoke("admin-users", { body })
+  if (error) throw new BackendError(await describeFunctionError(error))
 }
 
 /** 关键字里可能破坏 PostgREST 查询语法的字符，先剔除 */
@@ -594,6 +642,65 @@ export function createCloudBackend(config: CloudConfig): Backend {
       if (!ids.length) return
       const { error } = await client().from("other_expenses").delete().in("id", ids)
       if (error) throw new BackendError(translateDbError(error.message))
+    },
+
+    /* ---------- 成员与账号 ---------- */
+
+    async getMyMembership() {
+      const { data: authData } = await client().auth.getUser()
+      const uid = authData.user?.id
+      if (!uid) return null
+      const { data, error } = await client()
+        .from("app_members")
+        .select(MEMBER_COLUMNS)
+        .eq("id", uid)
+        .maybeSingle()
+      if (error) return null
+      return data ? normalizeMember(data as Record<string, unknown>) : null
+    },
+
+    async listMembers() {
+      const { data, error } = await client()
+        .from("app_members")
+        .select(MEMBER_COLUMNS)
+        .order("created_at", { ascending: true })
+      if (error) throw new BackendError(translateDbError(error.message))
+      return (data ?? []).map((r) => normalizeMember(r as Record<string, unknown>))
+    },
+
+    async createMember(draft: AppMemberDraft) {
+      const email = draft.email.trim().toLowerCase()
+      await callAdminUsers(client(), {
+        action: "create",
+        email,
+        password: draft.password,
+        role: draft.role,
+        display_name: draft.display_name ?? null,
+      })
+      const { data, error } = await client()
+        .from("app_members")
+        .select(MEMBER_COLUMNS)
+        .eq("email", email)
+        .maybeSingle()
+      if (error || !data) {
+        throw new BackendError("账号已创建，但读取成员记录失败，刷新页面即可看到")
+      }
+      return normalizeMember(data as Record<string, unknown>)
+    },
+
+    async setMemberRole(id: string, role: MemberRole) {
+      await callAdminUsers(client(), { action: "setRole", id, role })
+    },
+
+    async resetMemberPassword(id: string, password: string) {
+      await callAdminUsers(client(), { action: "resetPassword", id, password })
+    },
+
+    async deleteMembers(ids) {
+      // Edge Function 一次处理一个账号，逐个调用（成员数量很少，够用）
+      for (const id of ids) {
+        await callAdminUsers(client(), { action: "delete", id })
+      }
     },
 
     supportsUpload: true,

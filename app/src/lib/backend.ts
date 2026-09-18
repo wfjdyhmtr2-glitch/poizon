@@ -1,4 +1,7 @@
 import type {
+  AppMember,
+  AppMemberDraft,
+  MemberRole,
   OtherExpense,
   OtherExpenseDraft,
   Product,
@@ -97,6 +100,16 @@ export interface Backend {
   createOtherExpense(draft: OtherExpenseDraft): Promise<OtherExpense>
   updateOtherExpense(id: string, draft: Partial<OtherExpenseDraft>): Promise<OtherExpense>
   deleteOtherExpenses(ids: string[]): Promise<void>
+
+  /* ---------- 成员与账号（读取对所有成员开放，写入仅管理员）---------- */
+  /** 当前登录账号的成员档案；不在白名单里则为 null（此时前端应提示无权访问） */
+  getMyMembership(): Promise<AppMember | null>
+  listMembers(): Promise<AppMember[]>
+  /** 管理员直接创建账号（云端走 Edge Function，用 service_role 建号） */
+  createMember(draft: AppMemberDraft): Promise<AppMember>
+  setMemberRole(id: string, role: MemberRole): Promise<void>
+  resetMemberPassword(id: string, password: string): Promise<void>
+  deleteMembers(ids: string[]): Promise<void>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean

@@ -152,6 +152,60 @@ node scripts/release.mjs   # 生成/刷新 publish/ 目录（只保留 index.htm
 - 数据库结构变更（迁移 SQL）**不会**自动执行，仍需在 Supabase SQL Editor 手动跑一次
 - 首次部署后建议用管理员账号登录验一遍：登录、看板、入仓单、商品信息、双击复制
 
+## 六之三、成员与权限（怎么给同事开账号）
+
+### 角色
+
+| 角色 | 能做什么 |
+|---|---|
+| **管理员** | 管理账号（开号 / 改角色 / 重置密码 / 移除）、删除业务数据 |
+| **普通成员** | 只能查看与录入（删除类入口在界面上直接不渲染） |
+
+- 两个角色**共享同一份店铺数据**（不再按账号隔离，适合同店协作）。
+- 超级管理员 `shuo@dewu.com` 永远拥有管理员权限，**不能被降级或移除**。
+- 账号白名单存在 `app_members` 表里：不在这张表的账号登录后看不到任何数据（双重保险）。
+
+### 一次性配置（两步）
+
+**第 1 步：跑数据库迁移**
+
+Supabase 控制台 → SQL Editor → 执行 `app/supabase/migration-add-fields.sql`。
+它会建 `app_members` 表、把已有账号补录进去（`shuo@dewu.com` 自动是 admin），
+并把所有业务表策略改成「成员可读写、删除仅管理员」。
+
+**第 2 步：部署账号管理 Edge Function**
+
+创建 / 删除账号、改密码必须用 service_role 密钥，而这个密钥**绝不能**放进前端，
+所以这部分逻辑放在 Edge Function 里（前端只传意图，函数内部先验明调用者是不是管理员）：
+
+| 步骤 | 操作 |
+|---|---|
+| 1 | 控制台左侧 → **Edge Functions** → **Deploy a new function** → **Via Editor** |
+| 2 | 函数名填 **`admin-users`**（必须完全一致，前端按这个名字调用） |
+| 3 | 把 `app/supabase/functions/admin-users/index.ts` 的内容整体粘贴进去，删掉模板示例代码 |
+| 4 | 点 **Deploy** |
+| 5 | 页面上 "Verify JWT with legacy secret" 保持**关闭**（函数内部自己校验身份） |
+
+无需配置任何环境变量：`SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`
+由 Supabase 自动注入。
+
+> 没部署也不会影响其他功能，只是「成员管理」页点创建/删除时会提示服务不可用。
+
+### 建议：关闭公开注册
+
+Supabase 控制台 → **Authentication → Sign In / Providers → Email** → 关掉
+**Allow new users to sign up**。
+
+不关也不会泄漏数据（白名单外的人登录后什么都看不到），但关掉能避免无关人员注册进来撞见一个空系统。
+
+### 日常使用
+
+管理员登录 → 左侧 **系统 → 成员管理**：
+
+- 填「登录邮箱 + 初始密码」→ **创建账号**（已自动标记邮箱验证，对方拿到就能直接登录）
+- 列表中可随时**切换角色**、**重置密码**、**移除成员**
+  （移除后该账号无法再登录，其录入的数据会保留）
+
 ## 七、回归测试（改完必须跑）
 
 ```bash

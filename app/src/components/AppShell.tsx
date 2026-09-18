@@ -21,6 +21,7 @@ import {
   TrendingUp,
   Upload,
   UserRound,
+  Users,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -46,7 +47,14 @@ import { toast } from "sonner"
 
 const NAV_GROUPS: {
   label: string
-  items: { to: string; label: string; icon: typeof BarChart3; hint: string }[]
+  items: {
+    to: string
+    label: string
+    icon: typeof BarChart3
+    hint: string
+    /** 仅管理员可见（例如成员管理） */
+    adminOnly?: boolean
+  }[]
 }[] = [
   {
     label: "概览",
@@ -74,7 +82,10 @@ const NAV_GROUPS: {
   },
   {
     label: "系统",
-    items: [{ to: "/settings", label: "系统设置", icon: Settings, hint: "云端连接与账号" }],
+    items: [
+      { to: "/team", label: "成员管理", icon: Users, hint: "开账号与设置权限", adminOnly: true },
+      { to: "/settings", label: "系统设置", icon: Settings, hint: "云端连接与账号" },
+    ],
   },
 ]
 
@@ -212,7 +223,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function SidebarInner() {
-  const { isCloud, user } = useApp()
+  const { isAdmin, isCloud, user } = useApp()
 
   return (
     <div className="flex h-full flex-col">
@@ -234,7 +245,7 @@ function SidebarInner() {
             <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
               {group.label}
             </p>
-            {group.items.map((item) => (
+            {group.items.filter((item) => !item.adminOnly || isAdmin).map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

@@ -542,6 +542,50 @@ async function main() {
   await sleep(1600)
   console.log("  删除后已消失:", !(await bodyText()).includes("冒烟费用"))
 
+  console.log("\n=== 8e. 成员管理（管理员开账号 + 角色）===")
+  await goto(`${BASE}/#/team`, 2400)
+  const teamText = await bodyText()
+  console.log("  页面标题:", (await text("h1")) || "(空)")
+  console.log(
+    "  含创建账号表单:",
+    teamText.includes("创建账号") && teamText.includes("登录邮箱") && teamText.includes("初始密码"),
+  )
+  console.log("  含成员列表:", teamText.includes("成员列表"))
+  console.log("  有演示成员:", teamText.includes("staff@demo.com"))
+  console.log("  含角色标识:", teamText.includes("管理员"))
+  await shot("08e-team")
+
+  console.log("  — 创建一个新账号 —")
+  await setInput("#member-email", "smoke@demo.com")
+  await setInput("#member-password", "smoke1234")
+  await setInput("#member-name", "冒烟测试账号")
+  await sleep(300)
+  const createdMember = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('创建账号'));
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点创建按钮:", createdMember)
+  await sleep(1800)
+  console.log("  新成员已出现:", (await bodyText()).includes("smoke@demo.com"))
+  await shot("08e2-team-created")
+
+  console.log("  — 移除刚建的账号 —")
+  const teamDel = await evaluate(`(() => {
+    const btn = document.querySelector('button[aria-label="移除 smoke@demo.com"]');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  点移除按钮:", teamDel)
+  await sleep(900)
+  const confirmRemove = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '确认移除');
+    if (!btn) return false; btn.click(); return true;
+  })()`)
+  console.log("  确认移除:", confirmRemove)
+  await sleep(1600)
+  // 成功提示里也带着邮箱，先清掉 toast 再断言，避免误判
+  await dismissToasts()
+  console.log("  移除后已消失:", !(await bodyText()).includes("smoke@demo.com"))
+
   console.log("\n=== 9. 销售看板 ===")
   await viewport(1440, 900)
   await goto(`${BASE}/#/sales`, 2600)

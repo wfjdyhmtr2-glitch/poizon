@@ -50,7 +50,7 @@ function AmountText({ value }: { value: number }) {
 }
 
 export function OtherExpensesPage() {
-  const { backend, dataVersion, bumpData } = useApp()
+  const { backend, dataVersion, bumpData, isAdmin } = useApp()
 
   const [rows, setRows] = useState<OtherExpense[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -152,7 +152,7 @@ export function OtherExpensesPage() {
               <RefreshCcw className={cn("size-4", loading && "animate-spin")} />
               刷新
             </Button>
-            {selected.length > 0 ? (
+            {isAdmin && selected.length > 0 ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -361,15 +361,17 @@ export function OtherExpensesPage() {
                         {row.note ?? "—"}
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs text-destructive"
-                          aria-label={`删除 ${row.category}`}
-                          onClick={() => void remove([row.id])}
-                        >
-                          删除
-                        </Button>
+                        {isAdmin ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs text-destructive"
+                            aria-label={`删除 ${row.category}`}
+                            onClick={() => void remove([row.id])}
+                          >
+                            删除
+                          </Button>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   ))}

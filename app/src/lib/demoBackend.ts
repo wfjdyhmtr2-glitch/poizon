@@ -3,6 +3,9 @@ import { buildDemoProducts, buildDemoSalesOrders } from "./demoData"
 import { compressImage, placeholderImage, uid } from "./format"
 import { computeTradeStage, filterSalesOrders, orderStockEffect, sortSalesOrders, stockDelta } from "./sales"
 import type {
+  AppMember,
+  AppMemberDraft,
+  MemberRole,
   OtherExpense,
   Product,
   ProductImage,
@@ -26,6 +29,8 @@ const SPU_INFO_KEY = "yunguan.demo.spu-info.v1"
 const SPU_INFO_SEEDED_KEY = "yunguan.demo.spu-info-seeded.v1"
 const OTHER_KEY = "yunguan.demo.other-expenses.v1"
 const OTHER_SEEDED_KEY = "yunguan.demo.other-expenses-seeded.v1"
+const MEMBER_KEY = "yunguan.demo.members.v1"
+const MEMBER_SEEDED_KEY = "yunguan.demo.members-seeded.v1"
 const SESSION_KEY = "yunguan.demo.session.v1"
 
 const DEMO_ACCOUNT = { email: "admin@demo.com", password: "admin888" }
@@ -221,6 +226,66 @@ function sortOtherExpenses(rows: OtherExpense[]): OtherExpense[] {
     if (a.expense_date !== b.expense_date) return a.expense_date < b.expense_date ? 1 : -1
     return a.created_at < b.created_at ? 1 : -1
   })
+}
+
+/* ---------------- 演示：成员与角色 ---------------- */
+
+function readDemoSession(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY)
+    return raw ? (JSON.parse(raw) as AuthUser) : null
+  } catch {
+    return null
+  }
+}
+
+/** 初始演示成员：一个管理员 + 一个普通成员 */
+function buildDemoMembers(): AppMember[] {
+  const now = new Date().toISOString()
+  return [
+    {
+      id: "demo-member-admin",
+      email: DEMO_ACCOUNT.email,
+      role: "admin",
+      display_name: "店主（演示）",
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "demo-member-staff",
+      email: "staff@demo.com",
+      role: "member",
+      display_name: "店员小张",
+      created_at: now,
+      updated_at: now,
+    },
+  ]
+}
+
+function readMemberStore(): AppMember[] {
+  try {
+    const raw = localStorage.getItem(MEMBER_KEY)
+    if (raw) return JSON.parse(raw) as AppMember[]
+    if (localStorage.getItem(MEMBER_SEEDED_KEY)) return []
+  } catch {
+    /* ignore */
+  }
+  const seeded = buildDemoMembers()
+  try {
+    localStorage.setItem(MEMBER_KEY, JSON.stringify(seeded))
+    localStorage.setItem(MEMBER_SEEDED_KEY, "1")
+  } catch {
+    /* ignore */
+  }
+  return seeded
+}
+
+function writeMemberStore(rows: AppMember[]) {
+  try {
+    localStorage.setItem(MEMBER_KEY, JSON.stringify(rows))
+  } catch {
+    throw new BackendError("浏览器本地存储已满，建议先连接云端数据库。")
+  }
 }
 
 /* ---------------- 演示：入仓单（采购订单）存储 ---------------- */
@@ -987,6 +1052,64 @@ export function createDemoBackend(): Backend {
     async deleteOtherExpenses(ids) {
       const set = new Set(ids)
       writeOtherExpenseStore(readOtherExpenseStore().filter((r) => !set.has(r.id)))
+    },
+
+    /* ---------- 成员与账号 ---------- */
+
+    async getMyMembership() {
+      const session = readDemoSession()
+      if (!session) return null
+      const rows = readMemberStore()
+      return rows.find((m) => m.email.toLowerCase() === session.email.toLowerCase()) ?? null
+    },
+
+    async listMembers() {
+      return readMemberStore()
+    },
+
+    async createMember(draft: AppMemberDraft) {
+      const email = draft.email.trim().toLowerCase()
+      if (!email.includes("@")) throw new BackendError("邮箱格式不正确")
+      if (draft.password.length < 6) throw new BackendError("密码至少 6 位")
+      const rows = readMemberStore()
+      if (rows.some((m) => m.email.toLowerCase() === email)) {
+        throw new BackendError("这个邮箱已经在成员列表里了")
+      }
+      const now = new Date().toISOString()
+      const row: AppMember = {
+        id: uid(),
+        email,
+        role: draft.role,
+        display_name: draft.display_name?.trim() || null,
+        created_at: now,
+        updated_at: now,
+      }
+      writeMemberStore([...rows, row])
+      return row
+    },
+
+    async setMemberRole(id: string, role: MemberRole) {
+      const rows = readMemberStore()
+      const idx = rows.findIndex((m) => m.id === id)
+      if (idx < 0) throw new BackendError("成员不存在")
+      if (rows[idx].email.toLowerCase() === DEMO_ACCOUNT.email && role !== "admin") {
+        throw new BackendError("演示账号不能被降级")
+      }
+      rows[idx] = { ...rows[idx], role, updated_at: new Date().toISOString() }
+      writeMemberStore(rows)
+    },
+
+    async resetMemberPassword() {
+      /* 演示模式没有真实账号，改密码无实际作用（界面上会说明） */
+    },
+
+    async deleteMembers(ids) {
+      const set = new Set(ids)
+      const rows = readMemberStore()
+      if (rows.some((m) => set.has(m.id) && m.email.toLowerCase() === DEMO_ACCOUNT.email)) {
+        throw new BackendError("演示账号不能被移除")
+      }
+      writeMemberStore(rows.filter((m) => !set.has(m.id)))
     },
 
     supportsUpload: true,

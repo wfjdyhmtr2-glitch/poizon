@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { ALLOWED_EMAIL, DELETE_PASSWORD } from "@/lib/constants"
+import { DELETE_PASSWORD } from "@/lib/constants"
 import { firstMatchedImage } from "@/lib/images"
 import { formatMoney } from "@/lib/format"
 import type { Product, ProductImage, PurchaseOrder, SalesOrder, SpuInfo, SpuMapping } from "@/lib/types"
@@ -62,9 +62,9 @@ interface SpuBlock {
  * 不提供编辑入口；要改数据去入仓管理调整入仓单。
  */
 export function ProductsPage() {
-  const { backend, dataVersion, bumpData, isCloud, user } = useApp()
-  /** 删除是管理员专属：云端模式仅 shuo@dewu.com 可见删除入口，演示模式不限 */
-  const canDelete = !isCloud || (user?.email ?? "").toLowerCase() === ALLOWED_EMAIL
+  const { backend, dataVersion, bumpData, isAdmin } = useApp()
+  /** 删除是管理员专属：普通成员只能查看与录入，删除入口直接不渲染 */
+  const canDelete = isAdmin
   const [products, setProducts] = useState<Product[]>([])
   const [orders, setOrders] = useState<SalesOrder[]>([])
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([])

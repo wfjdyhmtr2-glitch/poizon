@@ -1,8 +1,14 @@
-/** 删除商品 / 规格时需要的确认密码（防误触门禁，数据安全由 RLS 按账号隔离兜底） */
+/** 删除商品 / 规格时需要的确认密码（防误触门禁，数据安全由 RLS 按角色控制兜底） */
 export const DELETE_PASSWORD = "1234567"
 
-/** 云端模式下唯一有权限查看数据的账号（数据库 RLS 同步按此邮箱收紧） */
-export const ALLOWED_EMAIL = "shuo@dewu.com"
+/**
+ * 超级管理员邮箱：永远拥有 admin 角色，不能被降级或移除。
+ * 数据库里的 public.is_admin() 也按这个邮箱判定，改这里要同步改 schemaSql.ts。
+ */
+export const SUPER_ADMIN_EMAIL = "shuo@dewu.com"
+
+/** @deprecated 用 SUPER_ADMIN_EMAIL；保留仅为兼容旧引用 */
+export const ALLOWED_EMAIL = SUPER_ADMIN_EMAIL
 
 import type { SalesSortKey, SortKey } from "./types"
 
