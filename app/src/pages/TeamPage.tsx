@@ -262,9 +262,14 @@ export function TeamPage() {
           {!isCloud ? (
             <p className="text-xs text-muted-foreground">
               当前是演示模式：新建的账号只作展示，无法真正登录。真实建号需要连接 Supabase
-              并部署 admin-users 函数（步骤见 README 第八节）。
+              并部署 admin-users 函数（见 README「成员与权限」一节）。
             </p>
-          ) : null}
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              首次使用需要先在 Supabase 部署 admin-users 函数（见 README「成员与权限」一节）；
+              没部署时点创建 / 重置密码 / 移除会提示服务不可用，其他功能不受影响。
+            </p>
+          )}
 
           {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
 

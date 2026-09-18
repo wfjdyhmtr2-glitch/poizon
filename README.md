@@ -206,12 +206,42 @@ Supabase 控制台 → **Authentication → Sign In / Providers → Email** → 
 - 列表中可随时**切换角色**、**重置密码**、**移除成员**
   （移除后该账号无法再登录，其录入的数据会保留）
 
+## 六之四、找同款比价（可选：开启自动识图）
+
+左侧「概览 → 找同款比价」，两个 Tab：
+
+- **图片找同款**：粘一张图 → 认出是什么款 → 一键去京东 / 拼多多 / 淘宝 / 1688 搜同款
+- **价格记录**：在商品页点「记价格」书签，把看到的价格一键记下来，攒成历史
+
+**不配任何东西就能用**——关键词手填，平台按钮一样能搜。只有想让它**自动识别**才需要下面两步。
+
+**第 1 步：部署识图函数**
+
+Edge Functions → Deploy a new function → Via Editor → 函数名 **`recognize-product`**（必须一致）→
+把 `app/supabase/functions/recognize-product/index.ts` 整段粘贴进去 → Deploy
+（同样保持 "Verify JWT with legacy secret" **关闭**）。
+
+**第 2 步：配一个视觉模型密钥**
+
+Settings → Edge Functions → Secrets → 新增：
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `VISION_API_KEY` | ✅ | 视觉模型的 API Key |
+| `VISION_BASE_URL` | — | 默认智谱 `https://open.bigmodel.cn/api/paas/v4` |
+| `VISION_MODEL` | — | 默认 `glm-4v-flash`（智谱，目前免费） |
+
+免费密钥：open.bigmodel.cn 注册 → 控制台建 API Key。想换别家（通义 / DeepSeek 等），
+只要兼容 OpenAI 的 `/chat/completions` 格式，改后两个变量就行。
+
+> 没部署时页面只会提示「未配置自动识图，手填关键词就行」——**这是正常降级，不是故障**。
+
 ## 七、回归测试（改完必须跑）
 
 ```bash
 cd app
-# 1) 单元测试：库存联动 / 入仓单 / 图片库（纯 Node，无需浏览器）
-node scripts/unit-stock.mjs
+# 1) 单元测试：库存联动 / 入仓单 / 图片库 / Edge Function 报错文案（纯 Node，无需浏览器）
+npm run test:unit
 
 # 2) 端到端回归：需要本机 Chrome + 无头 CDP
 npm run dev -- --port 5199 --strictPort &        # 另开一个终端
@@ -243,13 +273,15 @@ BASE_URL=http://127.0.0.1:5199 SHOT_DIR=/tmp/yg-shots node scripts/smoke.mjs
 **图片匹配链**（`lib/images.ts`）：精确颜色图 → 该 SPU 通用图 → SPU 默认主图（商品信息里勾选） → 商品旧封面。
 SPUID 的名称与主图在「商品信息」页登记（支持 Ctrl+V 粘贴图片）。
 
-**财务看板**：`盈亏 = 结算金额 − 成本 − 物流运费 + 补贴（返利） − 其他费用`（其他费用预留，暂 0）；
+**财务看板**：`盈亏 = 结算金额 − 成本 − 物流运费 + 补贴（返利） − 其他费用`；
 总盈亏（现金口径）= 已卖盈亏 − 手里存货投入。
+「其他费用」在「经营 → 其他费用」模块维护（**不绑定商品**：保证金 / 仓储费 / 取回费 / 会员费等），
+**正数 = 支出、负数 = 收回**（充值保证金与取回保证金是两条独立记录），合计净额直接作为已卖盈亏的减项。
 
 **交互**：页面上任意数据**双击即复制**（`src/hooks/useDoubleClickCopy.ts`，挂在 AppShell；输入框内保持原生选词）。
 
 **权限**：删除商品/规格需密码（`constants.DELETE_PASSWORD`，防误触门禁），且仅管理员账号可见删除入口；
-数据可见性由数据库 RLS 按 `owner_id` 隔离。
+业务数据由数据库 RLS 控制：**团队成员共享同一份店铺数据**，删除仅管理员（详见「成员与权限」一节）。
 
 ## 九、已知坑
 
@@ -257,3 +289,8 @@ SPUID 的名称与主图在「商品信息」页登记（支持 Ctrl+V 粘贴图
 2. **无头 Chrome 端口占用**：见第七节。
 3. **数据库结构落后于代码**：云端页面报错时，先确认 `migration-add-fields.sql` 是否已整段执行过。
 4. **spu_info 表**：商品信息登记（SPUID → 名称 / 主图）依赖该表，老库需要跑迁移脚本才会创建。
+5. **Edge Function 的报错翻译必须按函数区分**：多个函数共用一个兜底文案，会把用户引到错误的部署步骤
+   （识图函数没部署，却提示「请部署 admin-users」）。改这块后跑 `npm run test:unit`，
+   里面 `unit-edge-errors.mjs` 专门守这个。
+   另注意 supabase-js 在函数不存在时抛的是 `Edge Function returned a non-2xx status code`，
+   正则里漏掉 `non-2xx` 的话，提示会退化成一句英文报错。

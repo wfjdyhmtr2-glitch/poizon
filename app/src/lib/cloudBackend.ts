@@ -90,23 +90,41 @@ function normalizeMember(row: Record<string, unknown>): AppMember {
  * Edge Function 报错时，业务错误信息在响应体里而不是 error.message。
  * 另外函数没部署时 supabase-js 只会给一句 "Failed to send a request…"，
  * 这里翻译成可操作的提示，避免用户对着报错发懵。
+ *
+ * ⚠️ 提示语必须**按函数**传进来，不能写成全局常量：
+ * 曾经所有函数共用一个兜底文案，结果「识图函数没部署」也提示
+ * 「请部署 admin-users」，把人引到了完全无关的地方。
  */
-async function describeFunctionError(error: unknown): Promise<string> {
-  const e = error as { message?: string; context?: { json?: () => Promise<unknown> } }
+async function describeFunctionError(error: unknown, notDeployedHint: string): Promise<string> {
+  const e = error as { message?: string; context?: { status?: number; json?: () => Promise<unknown> } }
+  const status = e?.context?.status
+  // 最可靠的信号：网关直接 404 —— 这个函数根本没部署
+  if (status === 404) return notDeployedHint
   if (e?.context && typeof e.context.json === "function") {
     try {
-      const body = (await e.context.json()) as { error?: string }
+      const body = (await e.context.json()) as { error?: string; code?: string; message?: string }
+      // 函数已部署、但它自己拒绝了这次操作（真正的业务错误）
       if (body?.error) return String(body.error)
+      // 网关兜底格式：{ code: "NOT_FOUND", message: "Requested function was not found" }
+      if (body?.code === "NOT_FOUND" || /not found/i.test(String(body?.message ?? ""))) {
+        return notDeployedHint
+      }
     } catch {
       /* 响应体不是 JSON，走下面的通用处理 */
     }
   }
   const msg = e?.message ?? String(error)
-  if (/Failed to send a request|Failed to fetch|not found|404|relay/i.test(msg)) {
-    return "账号管理服务不可用：请先在 Supabase 部署 admin-users Edge Function（步骤见 README 第八节）"
+  // 注意 "non-2xx"：supabase-js 遇到 404 抛的就是这句，比 "Failed to send a request" 更常见，
+  // 漏掉它会导致提示退化成一串英文报错
+  if (/Failed to send a request|Failed to fetch|non-2xx|not found|404|relay/i.test(msg)) {
+    return notDeployedHint
   }
   return msg
 }
+
+/** 账号管理函数未部署时的提示。引用 README 用**小节标题**而不是序号，避免以后章节顺序变了失效 */
+const ADMIN_USERS_MISSING =
+  "账号管理服务不可用：请先在 Supabase 部署 admin-users Edge Function（见 README「成员与权限」一节）"
 
 /** 调用账号管理 Edge Function，统一处理错误 */
 async function callAdminUsers(
@@ -114,7 +132,7 @@ async function callAdminUsers(
   body: Record<string, unknown>,
 ): Promise<void> {
   const { error } = await client.functions.invoke("admin-users", { body })
-  if (error) throw new BackendError(await describeFunctionError(error))
+  if (error) throw new BackendError(await describeFunctionError(error, ADMIN_USERS_MISSING))
 }
 
 const PRICE_CAPTURE_COLUMNS =
@@ -943,7 +961,13 @@ export function createCloudBackend(config: CloudConfig): Backend {
       const { data, error } = await client().functions.invoke("recognize-product", {
         body: { image_url: imageUrl },
       })
-      if (error) throw new BackendError(await describeFunctionError(error))
+      // 没部署这个函数是**正常情况**（设计上就允许不装，退化成手填关键词），
+      // 所以提示要温和，别吓人、更别指错方向
+      if (error) {
+        throw new BackendError(
+          await describeFunctionError(error, "未配置自动识图，手填关键词就行（想开启见 README）"),
+        )
+      }
       const row = (data ?? {}) as { keyword?: string; brand?: string; note?: string }
       return {
         keyword: String(row.keyword ?? ""),
