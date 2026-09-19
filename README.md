@@ -32,6 +32,7 @@
 │   │   │   ├── demoBackend.ts    # 演示模式实现（localStorage）
 │   │   │   ├── schemaSql.ts      # 建表 + 迁移 SQL（单一事实来源）
 │   │   │   ├── sales.ts          # 订单/库存联动口径、时间范围
+│   │   │   ├── dewu.ts           # 得物后台导出文件的识别与字段映射
 │   │   │   ├── finance.ts        # 财务看板汇总口径
 │   │   │   ├── images.ts         # 图片按 SPUID/颜色匹配
 │   │   │   └── constants.ts      # 枚举与开关（删除密码等）
@@ -41,6 +42,7 @@
 │   ├── scripts/
 │   │   ├── smoke.mjs             # 端到端回归（无头 Chrome + CDP）
 │   │   ├── unit-stock.mjs        # 库存/入仓/图片单元测试
+│   │   ├── unit-dewu.mjs         # 得物导出文件识别 + 映射 + 状态归一口径
 │   │   ├── release.mjs           # 构建 + 生成发布目录
 │   │   └── export-sql.mjs        # 导出 supabase/schema.sql 与迁移脚本
 │   ├── supabase/
@@ -236,26 +238,79 @@ Settings → Edge Functions → Secrets → 新增：
 
 > 没部署时页面只会提示「未配置自动识图，手填关键词就行」——**这是正常降级，不是故障**。
 
+## 六之五、从得物后台导入订单（已支持，不需要任何配置）
+
+「销售订单」页 → **导入订单** → 直接把**得物商家后台（stark.dewu.com）导出的订单文件**拖进去即可，
+不用改列名、不用套模板：系统按特征表头自动识别得物文件（列顺序、列数变了也不影响）。
+
+映射关系（`lib/dewu.ts`）：
+
+| 得物导出列 | 系统字段 | 说明 |
+|---|---|---|
+| 订单号 | `order_no` | 判重主键，重复导入只更新 |
+| spuID | `sku` | **平台 spuID**，库存联动靠「商品 SPUID 直接匹配 → SPU 对照表」解析 |
+| 规格 / 数量 | `spec` | 规格原样存；数量 > 1 会给出提示（系统按一单一件记库存） |
+| 出价金额（元） | `bid_amount` | |
+| 预计收入金额（元） | `expected_income` | |
+| 买家支付时间 | `paid_at` | 盈亏口径的时间基准 |
+| 关闭原因 | `after_sales` | |
+| 订单状态 | `order_status` | **原样保留得物文案**（如「待卖家发货」） |
+
+三点必须知道的差异：
+
+1. **得物导出不含「是否结算」** → 一律按未结算导入，结算后在订单列表批量勾选；
+2. **得物导出不含「是否退货」** → 一律按未退货导入，签收后退款的单子要手工勾「已退货」才算亏损；
+3. **得物的状态是平台原文**（待卖家发货 / 待平台收货 / 已发货 …），系统按原样显示，
+   但**交易阶段与库存占用按正则识别这些中间态**，不会漏算（见第八节口径）。
+
+> 想从「手动导出 + 导入」升级成「点按钮全自动拉单」，需要得物**企业卖家**身份去
+> open.dewu.com 申请「自研商家」应用拿 `app_key/app_secret`（个人卖家不支持入驻开放平台，
+> 官方文档明确写了），拿到密钥后再补一个 `dewu-sync` Edge Function。
+
 ## 七、回归测试（改完必须跑）
 
 ```bash
 cd app
-# 1) 单元测试：库存联动 / 入仓单 / 图片库 / Edge Function 报错文案（纯 Node，无需浏览器）
+# 1) 单元测试：库存联动 / 入仓单 / 图片库 / 得物文件识别与状态归一 / Edge 报错文案（纯 Node，无需浏览器）
 npm run test:unit
 
 # 2) 端到端回归：需要本机 Chrome + 无头 CDP
 npm run dev -- --port 5199 --strictPort &        # 另开一个终端
+
+# macOS
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9222 \
   --user-data-dir=/tmp/yg-chrome about:blank &
-BASE_URL=http://127.0.0.1:5199 SHOT_DIR=/tmp/yg-shots node scripts/smoke.mjs
+BASE_URL=http://127.0.0.1:5199 node scripts/smoke.mjs
+
+# Windows（PowerShell 里启动 Chrome；vite 只监听 IPv6，所以 BASE_URL 用 localhost 而不是 127.0.0.1）
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9222 `
+  --user-data-dir="$env:TEMP\yg-chrome" about:blank
+$env:BASE_URL="http://localhost:5199"; node scripts/smoke.mjs
 ```
 
 - `smoke.mjs` 是回归基线：**全绿（无 `false`、无 console error、无 4xx/5xx）** 才算通过
-- 端口 9222 常被残留实例占用：`pkill -f remote-debugging-port=9222`
+- 覆盖的第 11b 节就是**得物导出文件导入**：识别 → 列映射 → 缺订单号拦下 → 入库 → 状态原样保留
+- 临时文件路径用 `os.tmpdir()` 生成：写死 `/tmp/...` 在 Windows 上浏览器会报
+  "The requested file could not be read"，两边都别再写死
+- 端口 9222 常被残留实例占用：macOS `pkill -f remote-debugging-port=9222`，Windows `Get-Process chrome | Stop-Process`
 - 弹窗类断言偶发时序抖动，复跑一次即可确认
 
 ## 八、业务口径速查
+
+**订单状态识别口径（改一处必须改三处）**：得物导出的状态是平台原文（待卖家发货 …），
+系统原样保存，所以「这单算不算成交」全靠正则识别。以下三处必须是同一套判断：
+
+| 位置 | 作用 |
+|---|---|
+| `src/lib/sales.ts` → `ACTIVE_ORDER_STATUS_PATTERN` / `normalizeOrderStatus` | 表单实时推导、老库缺生成列时兜底 |
+| `src/lib/schemaSql.ts` → `TRADE_STAGE_EXPR_SQL`（`trade_stage` 生成列） | **界面显示与统计的真正数据源** |
+| `src/lib/schemaSql.ts` → `order_stock_effect()` | 库存占用 / 释放 |
+
+`scripts/unit-dewu.mjs` 会把数据库那套正则重放到 JS 里，用 33 种状态 × 退货与否 × 结算与否
+逐条比对前端实现——改歪任何一边都会直接跑挂。判定顺序固定为
+**失败 → 关闭 → 生效中**，不要调换（例如「交易关闭成功」同时含「成功」二字）。
 
 **库存三态**（规则固化在数据库触发器 `STOCK_SYNC_SQL`，前端 `sales.ts` 保持同口径）：
 

@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
@@ -34,6 +35,7 @@ import {
 import { TradeStageBadge } from "@/components/common"
 import { useApp } from "@/contexts/AppContext"
 import { SALES_IMPORT_COLUMNS } from "@/lib/constants"
+import { DEWU_FILE_NOTES, buildDewuOrderRow, isDewuOrderFile } from "@/lib/dewu"
 import {
   computeTradeStage,
   isKnownOrderStatus,
@@ -64,6 +66,8 @@ export function SalesImportDialog({
   const { backend } = useApp()
   const [fileName, setFileName] = useState("")
   const [rows, setRows] = useState<SalesImportRow[]>([])
+  /** 是否识别为「得物后台导出」的原生文件（列名不同，映射方式也不同） */
+  const [dewuMode, setDewuMode] = useState(false)
   /** 能联动库存的 spuID 集合（商品 SPUID + 已建对照的外部 spuID），null 表示还没加载完 */
   const [knownSkus, setKnownSkus] = useState<Set<string> | null>(null)
   const [parsing, setParsing] = useState(false)
@@ -109,6 +113,7 @@ export function SalesImportDialog({
   function reset() {
     setFileName("")
     setRows([])
+    setDewuMode(false)
     setResult(null)
     setProgress(0)
     if (inputRef.current) inputRef.current.value = ""
@@ -132,10 +137,14 @@ export function SalesImportDialog({
       })
       if (!json.length) throw new Error("没有解析到数据行，请确认第一行是表头")
 
+      // 得物后台导出的原生文件（列名 / 列数都不一样）自动识别，不用套系统模板
+      const isDewu = isDewuOrderFile(Object.keys(json[0] ?? {}))
+      setDewuMode(isDewu)
+
       const seen = new Set<string>()
       const parsed = json.map((raw, index) => {
-        const row = buildRow(raw, index + 2)
-        const no = row.raw["订单号"]
+        const row = isDewu ? buildDewuOrderRow(raw, index + 2) : buildRow(raw, index + 2)
+        const no = row.order?.order_no || row.raw["订单号"]
         if (no) {
           if (seen.has(no)) row.warnings.push("文件内订单号重复，导入时后者会覆盖前者")
           else seen.add(no)
@@ -156,8 +165,19 @@ export function SalesImportDialog({
       }
       setRows(parsed)
       const bad = parsed.filter((r) => r.errors.length).length
-      if (bad) toast.warning(`解析完成：${parsed.length - bad} 行可导入，${bad} 行需要修正`)
-      else toast.success(`解析完成，共 ${parsed.length} 行全部可导入`)
+      if (isDewu) {
+        if (bad) {
+          toast.warning(
+            `已识别为得物订单导出文件：${parsed.length - bad} 条可导入，${bad} 条需要修正`,
+          )
+        } else {
+          toast.success(`已识别为得物订单导出文件，共 ${parsed.length} 条订单`)
+        }
+      } else if (bad) {
+        toast.warning(`解析完成：${parsed.length - bad} 行可导入，${bad} 行需要修正`)
+      } else {
+        toast.success(`解析完成，共 ${parsed.length} 行全部可导入`)
+      }
     } catch (error) {
       toast.error((error as Error).message)
     } finally {
@@ -222,6 +242,7 @@ export function SalesImportDialog({
           <DialogTitle>批量导入销售订单</DialogTitle>
           <DialogDescription>
             订单号是判断新增还是更新的依据；订单状态与是否退货会自动推导交易阶段。
+            可以直接拖得物商家后台导出的订单文件，系统会自动识别。
           </DialogDescription>
         </DialogHeader>
 
@@ -272,7 +293,7 @@ export function SalesImportDialog({
                   {parsing ? "正在解析文件…" : "把订单 Excel / CSV 拖到这里，或点击选择"}
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  支持 .xlsx / .xls / .csv，首行必须是表头
+                  支持 .xlsx / .xls / .csv，以及得物后台直接导出的订单文件（自动识别列名）
                 </p>
               </div>
               <input
@@ -336,15 +357,33 @@ export function SalesImportDialog({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">{fileName}</span> · 共解析{" "}
-                {rows.length} 行
+              <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                {dewuMode ? (
+                  <Badge variant="secondary" className="font-normal">
+                    已识别为得物订单导出文件
+                  </Badge>
+                ) : null}
+                <span>
+                  <span className="font-medium text-foreground">{fileName}</span> · 共解析{" "}
+                  {rows.length} 行
+                </span>
               </p>
               <Button variant="ghost" size="sm" onClick={reset}>
                 <RotateCcw className="size-4" />
                 重新选择
               </Button>
             </div>
+
+            {dewuMode ? (
+              <Alert>
+                <AlertTitle>得物文件的两点差异</AlertTitle>
+                <AlertDescription className="space-y-1 text-xs leading-relaxed">
+                  {DEWU_FILE_NOTES.map((note) => (
+                    <p key={note}>· {note}</p>
+                  ))}
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
             <div className="max-h-[38vh] overflow-auto rounded-xl border thin-scrollbar">
               <Table>
@@ -353,6 +392,7 @@ export function SalesImportDialog({
                     <TableHead className="w-12">行号</TableHead>
                     <TableHead className="min-w-[150px]">订单号</TableHead>
                     <TableHead className="w-[100px]">spuID</TableHead>
+                    {dewuMode ? <TableHead className="min-w-[200px]">商品名称</TableHead> : null}
                     <TableHead className="w-[100px]">规格</TableHead>
                     <TableHead className="w-[110px]">订单状态</TableHead>
                     <TableHead className="w-[104px]">是否退货</TableHead>
@@ -387,6 +427,14 @@ export function SalesImportDialog({
                         <TableCell className="truncate font-mono text-xs">
                           {row.raw["spuID"] || "—"}
                         </TableCell>
+                        {dewuMode ? (
+                          <TableCell
+                            className="max-w-[240px] truncate text-xs"
+                            title={row.raw["商品名称"]}
+                          >
+                            {row.raw["商品名称"] || "—"}
+                          </TableCell>
+                        ) : null}
                         <TableCell className="truncate text-xs">{row.raw["规格"] || "—"}</TableCell>
                         <TableCell className="text-xs">{row.raw["订单状态"] || "—"}</TableCell>
                         <TableCell className="text-xs">{row.raw["是否退货"] || "否"}</TableCell>

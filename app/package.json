@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "sql": "node scripts/export-sql.mjs",
     "release": "npm run build && node scripts/release.mjs",
-    "test:unit": "node scripts/unit-stock.mjs && node scripts/unit-edge-errors.mjs",
+    "test:unit": "node scripts/unit-stock.mjs && node scripts/unit-dewu.mjs && node scripts/unit-edge-errors.mjs",
     "test:smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {

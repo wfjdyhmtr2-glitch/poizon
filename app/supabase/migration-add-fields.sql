@@ -208,15 +208,13 @@ create table if not exists public.sales_orders (
   expected_income numeric(12,2),
   after_sales     text,
   paid_at         timestamptz,
-  trade_stage     text generated always as (
-                    case
-                      when order_status = '交易失败'     then 'unpaid'
-                      when order_status = '交易关闭成功' then 'refund_before_ship'
-                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
-                      when order_status = '交易成功'     then 'completed'
+  trade_stage     text generated always as (case
+                      when order_status ~ '交易失败|未付款|待付款|已取消|付款失败|失败' then 'unpaid'
+                      when order_status ~ '关闭成功|交易关闭|已关闭|取消成功' then 'refund_before_ship'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' and is_returned then 'refund_after_receive'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' then 'completed'
                       else 'unknown'
-                    end
-                  ) stored,
+                    end) stored,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -284,9 +282,11 @@ create or replace function public.order_stock_effect(
   p_status text, p_returned boolean, p_settled boolean
 ) returns text language sql immutable as $$
   select case
-    when p_status = '交易成功' and not coalesce(p_returned, false)
+    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
+         and not coalesce(p_returned, false)
          and coalesce(p_settled, false) then 'consumed'
-    when p_status = '交易成功' and not coalesce(p_returned, false) then 'locked'
+    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
+         and not coalesce(p_returned, false) then 'locked'
     else 'released'
   end;
 $$;
@@ -413,7 +413,24 @@ create trigger products_refresh_orders
 -- 存量订单补解析（列刚加上时 resolved_sku 全为 null，重算后会自动锁定该锁的库存）
 update public.sales_orders set sku = sku where resolved_sku is null;
 
--- 4) 访问控制：仅限管理员账号
+-- 4) 得物后台导出的订单状态兼容（老库必跑）
+--    得物导出的状态是平台原文（待卖家发货 / 待平台收货 …），系统原样保存这些文本；
+--    上面第 3 步的 order_stock_effect 已按正则识别，这里把老的 trade_stage 生成列
+--    一起重建，否则中间态订单的交易阶段会停在 unknown、统计里看不到。
+--    生成列无法直接改定义，只能 drop + add——数据会自动重算，不会丢。
+alter table public.sales_orders drop column if exists trade_stage;
+alter table public.sales_orders
+  add column trade_stage text generated always as (case
+                      when order_status ~ '交易失败|未付款|待付款|已取消|付款失败|失败' then 'unpaid'
+                      when order_status ~ '关闭成功|交易关闭|已关闭|取消成功' then 'refund_before_ship'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' and is_returned then 'refund_after_receive'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' then 'completed'
+                      else 'unknown'
+                    end) stored;
+drop index if exists public.sales_orders_stage_idx;
+create index if not exists sales_orders_stage_idx on public.sales_orders (trade_stage);
+
+-- 5) 访问控制：仅限管理员账号
 
 -- ---------- 访问控制、成员与角色 ----------
 
@@ -724,5 +741,5 @@ as $$
 $$;
 
 
--- 5) 让 PostgREST 立刻感知新表与新字段
+-- 6) 让 PostgREST 立刻感知新表与新字段
 notify pgrst, 'reload schema';
