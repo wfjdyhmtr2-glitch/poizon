@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
+  ImageIcon,
   Link2,
   Pencil,
   Plus,
@@ -60,7 +61,15 @@ import {
   type SalesRangePreset,
 } from "@/lib/sales"
 import { formatDateTime, formatMoney } from "@/lib/format"
-import type { Product, SalesOrder, SalesOrderDraft, SalesOrderQuery, SalesSortKey } from "@/lib/types"
+import type {
+  Product,
+  ProductImage,
+  SalesOrder,
+  SalesOrderDraft,
+  SalesOrderQuery,
+  SalesSortKey,
+  SpuInfo,
+} from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -86,6 +95,9 @@ export function SalesOrdersPage() {
   const [rows, setRows] = useState<SalesOrder[]>([])
   const [total, setTotal] = useState(0)
   const [products, setProducts] = useState<Product[]>([])
+  /** 「商品信息」里登记的 SPU 主图 + 图库，用来给订单列表显示缩略图 */
+  const [spuInfos, setSpuInfos] = useState<SpuInfo[]>([])
+  const [productImages, setProductImages] = useState<ProductImage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -127,7 +139,16 @@ export function SalesOrdersPage() {
       ])
       setRows(list.rows)
       setTotal(list.total)
-      if (productList) setProducts(productList)
+      if (productList) {
+        setProducts(productList)
+        // 顺带把「商品信息」的主图与图库拉一次：订单列表要显示缩略图
+        const [infos, imgs] = await Promise.all([
+          backend.listSpuInfo().catch(() => [] as SpuInfo[]),
+          backend.listProductImages().catch(() => [] as ProductImage[]),
+        ])
+        setSpuInfos(infos)
+        setProductImages(imgs)
+      }
       setSelected((prev) => {
         const ids = new Set(list.rows.map((r) => r.id))
         const next = new Set([...prev].filter((id) => ids.has(id)))
@@ -146,6 +167,18 @@ export function SalesOrdersPage() {
   }, [load, dataVersion])
 
   const productBySku = useMemo(() => new Map(products.map((p) => [p.sku, p])), [products])
+
+  /** SPUID → 缩略图：优先「商品信息」里登记的主图，其次图库里的第一张 */
+  const thumbBySku = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const img of productImages) {
+      if (img.url && !map.has(img.sku)) map.set(img.sku, img.url)
+    }
+    for (const info of spuInfos) {
+      if (info.image_url) map.set(info.sku, info.image_url)
+    }
+    return map
+  }, [productImages, spuInfos])
   const totalPages = Math.max(1, Math.ceil(total / query.pageSize))
   const pageIds = useMemo(() => rows.map((r) => r.id), [rows])
   const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
@@ -516,13 +549,27 @@ export function SalesOrdersPage() {
                         </TableCell>
                         <TableCell className="font-mono text-xs">{o.order_no}</TableCell>
                         <TableCell>
-                          <div className="min-w-0">
-                            <p className="line-clamp-1 text-sm font-medium">
-                              {product?.name ?? ownedSku}
-                            </p>
-                            <p className="truncate font-mono text-xs text-muted-foreground">
-                              {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
-                            </p>
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            {thumbBySku.get(ownedSku) ? (
+                              <img
+                                src={thumbBySku.get(ownedSku)}
+                                alt=""
+                                loading="lazy"
+                                className="size-10 shrink-0 rounded-md border bg-muted object-cover"
+                              />
+                            ) : (
+                              <div className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground">
+                                <ImageIcon className="size-4" />
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="line-clamp-1 text-sm font-medium">
+                                {product?.name ?? ownedSku}
+                              </p>
+                              <p className="truncate font-mono text-xs text-muted-foreground">
+                                {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
+                              </p>
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell className="truncate text-xs text-muted-foreground">
@@ -619,17 +666,31 @@ export function SalesOrdersPage() {
                 <Card key={o.id} className={cn(selected.has(o.id) && "ring-2 ring-primary/40")}>
                   <CardContent className="space-y-3 p-3.5">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate font-mono text-xs text-muted-foreground">
-                          {o.order_no}
-                        </p>
-                        <p className="mt-1 line-clamp-1 text-sm font-medium">
-                          {product?.name ?? ownedSku}
-                        </p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
-                          {o.spec ? ` · ${o.spec}` : ""}
-                        </p>
+                      <div className="flex min-w-0 items-start gap-2.5">
+                        {thumbBySku.get(ownedSku) ? (
+                          <img
+                            src={thumbBySku.get(ownedSku)}
+                            alt=""
+                            loading="lazy"
+                            className="size-12 shrink-0 rounded-md border bg-muted object-cover"
+                          />
+                        ) : (
+                          <div className="flex size-12 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground">
+                            <ImageIcon className="size-4" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate font-mono text-xs text-muted-foreground">
+                            {o.order_no}
+                          </p>
+                          <p className="mt-1 line-clamp-1 text-sm font-medium">
+                            {product?.name ?? ownedSku}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
+                            {o.spec ? ` · ${o.spec}` : ""}
+                          </p>
+                        </div>
                       </div>
                       <Checkbox
                         checked={selected.has(o.id)}

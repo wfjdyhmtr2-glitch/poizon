@@ -834,6 +834,10 @@ async function main() {
   const orderText = await bodyText()
   console.log("  页面标题:", (await text("h1")) || "(空)")
   console.log("  有演示订单（DW 开头）:", /DW\d+/.test(orderText))
+  console.log(
+    "  商品缩略图已渲染:",
+    (await evaluate("document.querySelectorAll('table img').length")) > 0,
+  )
   await shot("13-sales-orders")
 
   console.log("\n=== 10b. 订单时间筛选 ===")
