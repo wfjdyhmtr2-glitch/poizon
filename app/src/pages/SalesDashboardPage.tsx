@@ -169,7 +169,7 @@ export function SalesDashboardPage() {
                 ? ` · 覆盖近 ${data.coverageDays} 天`
                 : ""}
             {excludedCount > 0 ? ` · 已排除 ${excludedCount} 条范围外/无支付时间` : ""}
-            {" · "}购入在京东/拼多多，售出在得物
+            {" · "}在其他平台购入，售出在得物
           </p>
         </div>
         <div className="flex gap-2">
