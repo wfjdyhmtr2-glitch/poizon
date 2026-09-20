@@ -630,6 +630,32 @@ async function main() {
   console.log("  解析出 1 张入仓单:", poPreviewText.includes("将创建") && poPreviewText.includes("1"))
   console.log("  采购金额合计已算出:", poPreviewText.includes("采购金额合计"))
   await shot("08c3-purchase-import-preview")
+  console.log("  含「上传截图识别」入口:", poPreviewText.includes("上传截图识别"))
+  // 预览行可编辑：清空第 1 行 SPUID → 变成 0 张可导；填回 → 恢复 1 张
+  const clearSku = await evaluate(`(() => {
+    const el = document.querySelector('[aria-label="第 1 行 SPUID"]');
+    if (!el) return false;
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(700)
+  const cleared = await bodyText()
+  console.log("  SPUID 清空后变 0 张可导:", cleared.includes("导入 0 张入仓单"))
+  const refillSku = await evaluate(`(() => {
+    const el = document.querySelector('[aria-label="第 1 行 SPUID"]');
+    if (!el) return false;
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, ${JSON.stringify(poBefore.sku)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(700)
+  const refilled = await bodyText()
+  console.log("  填回 SPUID 后恢复 1 张:", refilled.includes("导入 1 张入仓单"), "| 清空操作:", clearSku, "填回操作:", refillSku)
   // 取消勾选「计入库存」
   const poUntick = await evaluate(`(() => {
     const el = document.querySelector('[aria-label="计入库存"]');

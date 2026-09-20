@@ -3,6 +3,7 @@ import type {
   AppMemberDraft,
   ImageLookup,
   ImageLookupDraft,
+  RecognizedPurchase,
   MarketOverview,
   MarketQuery,
   MarketRankRow,
@@ -170,6 +171,12 @@ export interface Backend {
    * 未部署该函数时会抛错，调用方应降级成「手动填关键词」。
    */
   recognizeImage(imageUrl: string): Promise<{ keyword: string; brand: string; note: string }>
+  /**
+   * 让服务端识别一张「采购截图」（recognize-purchase Edge Function），
+   * 返回结构化采购明细，用于入仓单批量导入。未部署时会抛错，调用方应提示改用粘贴 / Excel。
+   * 入参是 data URL（data:image/jpeg;base64,...）。
+   */
+  recognizePurchase(imageBase64: string): Promise<RecognizedPurchase>
 
   /* ---------- 文件 ---------- */
   supportsUpload: boolean

@@ -1042,6 +1042,39 @@ export function createCloudBackend(config: CloudConfig): Backend {
       }
     },
 
+    async recognizePurchase(imageBase64) {
+      const { data, error } = await client().functions.invoke("recognize-purchase", {
+        body: { image_base64: imageBase64 },
+      })
+      // 没部署这个函数是正常情况（截图这条路是可选增强），提示要温和且指对方向
+      if (error) {
+        throw new BackendError(
+          await describeFunctionError(
+            error,
+            "这个系统还没开「截图识别」：可以改用粘贴表格 / 上传 Excel，或按 README 部署 recognize-purchase 函数",
+          ),
+        )
+      }
+      const row = (data ?? {}) as {
+        platform?: string
+        date?: string
+        rows?: { name?: string; spec?: string; quantity?: number; unitPrice?: number | null; amount?: number | null }[]
+        note?: string
+      }
+      return {
+        platform: String(row.platform ?? ""),
+        date: String(row.date ?? ""),
+        note: String(row.note ?? ""),
+        rows: (row.rows ?? []).map((r) => ({
+          name: String(r.name ?? ""),
+          spec: String(r.spec ?? ""),
+          quantity: Number(r.quantity ?? 1) || 1,
+          unitPrice: r.unitPrice === null || r.unitPrice === undefined ? null : Number(r.unitPrice),
+          amount: r.amount === null || r.amount === undefined ? null : Number(r.amount),
+        })),
+      }
+    },
+
     supportsUpload: true,
 
     async listSpuInfo() {

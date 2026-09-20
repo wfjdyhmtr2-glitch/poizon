@@ -1580,6 +1580,13 @@ export function createDemoBackend(): Backend {
       writeLookupStore(readLookupStore().filter((r) => !set.has(r.id)))
     },
 
+    async recognizePurchase() {
+      // 演示模式没有服务端，走粘贴 / Excel 那条路
+      throw new BackendError(
+        "演示模式没有服务端识别能力，请把表格粘进来；连接云端并部署 recognize-purchase 函数后即可识别采购截图",
+      )
+    },
+
     async recognizeImage() {
       // 演示模式没有服务端，识别能力不可用——界面上会提示手动填关键词
       throw new BackendError(

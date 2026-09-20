@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react"
-import { Download, FileSpreadsheet, Loader2, Upload } from "lucide-react"
+import { Download, FileSpreadsheet, ImagePlus, Loader2, Upload } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -11,11 +11,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useApp } from "@/contexts/AppContext"
 import { formatMoney } from "@/lib/format"
-import type { PurchaseOrderDraft, SpuInfo } from "@/lib/types"
+import type { PurchaseOrderDraft, RecognizedPurchaseRow, SpuInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -97,6 +98,33 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
+/** 截图动辄几 MB，先压到 1600px 以内再发（传得更快、模型也更好认） */
+async function fileToDataUrl(file: File, maxSide = 1600): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
+  const w = Math.max(1, Math.round(bitmap.width * scale))
+  const h = Math.max(1, Math.round(bitmap.height * scale))
+  const canvas = document.createElement("canvas")
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext("2d")
+  if (!ctx) throw new Error("这个浏览器不支持图片压缩")
+  ctx.drawImage(bitmap, 0, 0, w, h)
+  bitmap.close?.()
+  return canvas.toDataURL("image/jpeg", 0.85)
+}
+
+/** 把「黑色 M」「珍珠白 XL」这类规格拆成颜色 + 尺码（拆不开就整串当颜色） */
+function splitSpec(spec: string): { color: string; size: string } {
+  const text = spec.replace(/[（(][^）)]*[）)]/g, " ").trim()
+  if (!text) return { color: "", size: "" }
+  const m = text.match(/(?:^|\s)(XXS|XS|XXL|XXXL|2XL|3XL|4XL|XL|S|M|L|\d{2,3}(?:\/\d{2,3})?|[A-Z]\d{1,2})(?:\s|$)/i)
+  if (!m) return { color: text, size: "" }
+  const size = m[1].toUpperCase()
+  const color = text.replace(m[0], " ").replace(/\s+/g, " ").trim()
+  return { color, size }
+}
+
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -115,8 +143,11 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
   const [text, setText] = useState("")
   const [countStock, setCountStock] = useState(true)
   const [importing, setImporting] = useState(false)
+  const [recognizing, setRecognizing] = useState(false)
   const [progress, setProgress] = useState("")
+  const [recognizeIssues, setRecognizeIssues] = useState<string[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
+  const shotRef = useRef<HTMLInputElement>(null)
 
   /** 货号 → SPUID：表里填的是货号也能自动纠正（他系统里商品主键是 SPUID） */
   const goodsNoToSku = useMemo(() => {
@@ -133,6 +164,28 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     setNotice("")
     setText("")
     setProgress("")
+    setRecognizeIssues([])
+  }
+
+  /** 预览表里直接改一行（识别难免有错，得能就地修） */
+  function updateRow(index: number, patch: Partial<ParsedRow>) {
+    setRows((prev) => {
+      const next = [...prev]
+      const row = { ...next[index], ...patch }
+      // 手填的如果是个货号，照样自动认成本店 SPUID
+      if (patch.skuRaw !== undefined) {
+        const raw = patch.skuRaw.trim()
+        const mapped = goodsNoToSku.get(norm(raw))
+        row.sku = mapped ?? raw
+        row.skuFixed = Boolean(mapped) && mapped !== raw
+      }
+      const issues: string[] = []
+      if (!row.sku.trim()) issues.push("缺 SPUID")
+      if (row.quantity <= 0) issues.push("数量要大于 0")
+      if (row.unitCost === null) issues.push("没填单价（成本不会更新）")
+      next[index] = { ...row, issue: issues.length ? issues.join("；") : null }
+      return next
+    })
   }
 
   function mapRows(raw: Record<string, unknown>[]) {
@@ -214,6 +267,62 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
       return obj
     })
     mapRows(data)
+  }
+
+  /** 截图识别：逐张发给服务端，把结果并进预览表（识别不到货号，SPUID 需要人工补） */
+  async function recognizeShots(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith("image/"))
+    if (!images.length) return
+    setRecognizing(true)
+    setRecognizeIssues([])
+    const issues: string[] = []
+    const added: ParsedRow[] = []
+    try {
+      for (let i = 0; i < images.length; i++) {
+        const label = images[i].name || `第 ${i + 1} 张截图`
+        setProgress(`识别中 ${i + 1}/${images.length}：${label}`)
+        try {
+          const dataUrl = await fileToDataUrl(images[i])
+          const res = await backend.recognizePurchase(dataUrl)
+          if (!res.rows.length) {
+            issues.push(`${label}：${res.note || "没认出商品行"}`)
+            continue
+          }
+          for (const r of res.rows as RecognizedPurchaseRow[]) {
+            const { color, size } = splitSpec(r.spec)
+            added.push({
+              orderNo: "",
+              platform: res.platform || "",
+              purchasedAt: normalizeDate(res.date) || todayStr(),
+              skuRaw: "",
+              sku: "",
+              skuFixed: false,
+              name: r.name,
+              color,
+              size,
+              quantity: r.quantity,
+              unitCost: r.unitPrice,
+              shippingFee: null,
+              remark: "",
+              // 截图里读不到本店的 SPUID，留一列让人补（填货号也行，导入时会自动认）
+              issue: "缺 SPUID（截图读不到，填 SPUID 或货号）",
+            })
+          }
+        } catch (err) {
+          issues.push(`${label}：${(err as Error).message}`)
+        }
+      }
+      if (added.length) {
+        setRows((prev) => [...prev, ...added])
+        setNotice(`截图识别出 ${added.length} 行，请核对商品名、数量、单价，并补上 SPUID / 货号后再导入`)
+      } else if (!issues.length) {
+        setNotice("这几张截图里没认出采购明细")
+      }
+      setRecognizeIssues(issues)
+    } finally {
+      setRecognizing(false)
+      setProgress("")
+    }
   }
 
   /** 按入仓单号分组；没写单号的按「平台 + 日期」自动归组并生成单号 */
@@ -327,22 +436,55 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
 
   return (
     <Dialog open={open} onOpenChange={(v) => !importing && (v ? onOpenChange(v) : (reset(), onOpenChange(v)))}>
-      <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto thin-scrollbar">
+      <DialogContent
+        className="max-h-[88vh] max-w-4xl overflow-y-auto thin-scrollbar"
+        onPaste={(e) => {
+          // 直接对着弹窗按 Command+V 粘截图
+          const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"))
+          if (files.length) {
+            e.preventDefault()
+            void recognizeShots(files)
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>批量导入采购（入仓单）</DialogTitle>
           <DialogDescription>
-            粘贴或上传一张采购表，按「入仓单号」自动分成多张入仓单。需要的列：
-            <strong>SPUID</strong>（填货号也能自动认成 SPUID）、<strong>数量</strong>、
-            <strong>进货单价</strong>；平台 / 采购日期 / 颜色 / 尺码 / 运费 / 备注可选。
+            <strong>截图识别</strong>：把采购订单截图丢进来（或直接 Command+V 粘贴），自动读出商品、规格、数量、单价；
+            也可以<strong>粘贴 / 上传表格</strong>。按「入仓单号」自动分成多张入仓单。
             <br />
             <span className="text-muted-foreground">
-              「入仓单号」留空时，系统按「平台 + 日期」自动归组并生成单号。
+              表格需要的列：<strong>SPUID</strong>（填货号也能自动认）、<strong>数量</strong>、
+              <strong>进货单价</strong>；平台 / 日期 / 颜色 / 尺码 / 运费 / 备注可选。
+              「入仓单号」留空时按「平台 + 日期」自动归组并生成单号。
+              下面预览表里的 SPUID、数量、单价<strong>可以直接改</strong>。
             </span>
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => shotRef.current?.click()}
+              disabled={recognizing}
+            >
+              {recognizing ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
+              {recognizing ? "识别中…" : "上传截图识别"}
+            </Button>
+            <input
+              ref={shotRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const files = [...(e.target.files ?? [])]
+                if (files.length) void recognizeShots(files)
+                e.target.value = ""
+              }}
+            />
             <Button variant="outline" size="sm" onClick={() => void downloadTemplate()}>
               <Download className="size-4" />
               下载模板
@@ -401,6 +543,14 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
             </span>
           </label>
 
+          {recognizeIssues.length ? (
+            <ul className="space-y-1 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+              {recognizeIssues.map((msg, i) => (
+                <li key={i}>{msg}</li>
+              ))}
+            </ul>
+          ) : null}
+
           {notice ? (
             <p className={cn("text-sm", rows.length ? "text-muted-foreground" : "text-destructive")}>
               {notice}
@@ -425,39 +575,68 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
                   <thead className="sticky top-0 bg-muted/80 backdrop-blur">
                     <tr className="text-left">
                       <th className="px-2 py-1.5 font-medium">入仓单</th>
-                      <th className="px-2 py-1.5 font-medium">平台</th>
-                      <th className="px-2 py-1.5 font-medium">日期</th>
-                      <th className="px-2 py-1.5 font-medium">SPUID</th>
+                      <th className="px-2 py-1.5 font-medium">商品</th>
+                      <th className="px-2 py-1.5 font-medium">SPUID / 货号</th>
                       <th className="px-2 py-1.5 font-medium">规格</th>
                       <th className="px-2 py-1.5 text-right font-medium">数量</th>
                       <th className="px-2 py-1.5 text-right font-medium">单价</th>
+                      <th className="px-2 py-1.5 font-medium">平台 / 日期</th>
                       <th className="px-2 py-1.5 font-medium">提示</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.slice(0, 200).map((r, i) => (
                       <tr key={i} className="border-t">
-                        <td className="max-w-[130px] truncate px-2 py-1.5 text-muted-foreground">
+                        <td className="max-w-[110px] truncate px-2 py-1.5 text-muted-foreground">
                           {r.orderNo || "（自动）"}
                         </td>
-                        <td className="px-2 py-1.5 text-muted-foreground">{r.platform || "—"}</td>
-                        <td className="px-2 py-1.5 tabular-nums text-muted-foreground">
-                          {r.purchasedAt}
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <span className={cn("tabular-nums", r.skuFixed && "text-amber-600")}>
-                            {r.sku || r.skuRaw || "—"}
+                        <td className="max-w-[190px] px-2 py-1.5">
+                          <span className="line-clamp-2" title={r.name}>
+                            {r.name || "—"}
                           </span>
-                          {r.skuFixed ? (
-                            <span className="ml-1 text-[10px] text-amber-600">（按货号认出）</span>
-                          ) : null}
+                        </td>
+                        <td className="px-1 py-1">
+                          <Input
+                            aria-label={`第 ${i + 1} 行 SPUID`}
+                            className={cn(
+                              "h-7 w-[120px] px-2 text-xs",
+                              r.skuFixed && "text-amber-600",
+                            )}
+                            placeholder="SPUID 或货号"
+                            value={r.sku || r.skuRaw}
+                            onChange={(e) => updateRow(i, { skuRaw: e.target.value, sku: e.target.value, skuFixed: false })}
+                          />
                         </td>
                         <td className="px-2 py-1.5 text-muted-foreground">
                           {[r.color, r.size].filter(Boolean).join(" / ") || "—"}
                         </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{r.quantity}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">
-                          {r.unitCost === null ? "—" : formatMoney(r.unitCost)}
+                        <td className="px-1 py-1">
+                          <Input
+                            aria-label={`第 ${i + 1} 行数量`}
+                            className="h-7 w-[62px] px-2 text-right text-xs tabular-nums"
+                            inputMode="numeric"
+                            value={String(r.quantity)}
+                            onChange={(e) =>
+                              updateRow(i, { quantity: Math.max(0, Math.round(Number(e.target.value) || 0)) })
+                            }
+                          />
+                        </td>
+                        <td className="px-1 py-1">
+                          <Input
+                            aria-label={`第 ${i + 1} 行单价`}
+                            className="h-7 w-[84px] px-2 text-right text-xs tabular-nums"
+                            inputMode="decimal"
+                            placeholder="—"
+                            value={r.unitCost === null ? "" : String(r.unitCost)}
+                            onChange={(e) =>
+                              updateRow(i, {
+                                unitCost: e.target.value.trim() === "" ? null : Number(e.target.value),
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 text-muted-foreground">
+                          {[r.platform, r.purchasedAt].filter(Boolean).join(" · ") || "—"}
                         </td>
                         <td className="px-2 py-1.5 text-destructive">{r.issue ?? ""}</td>
                       </tr>
@@ -478,7 +657,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
           <Button variant="outline" onClick={() => (reset(), onOpenChange(false))} disabled={importing}>
             取消
           </Button>
-          <Button onClick={() => void runImport()} disabled={importing || !rows.length}>
+          <Button onClick={() => void runImport()} disabled={importing || recognizing || !groups.length}>
             {importing ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
             {importing ? "导入中…" : `导入 ${groups.length} 张入仓单`}
           </Button>

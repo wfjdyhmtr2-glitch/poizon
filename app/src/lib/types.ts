@@ -139,6 +139,26 @@ export type TradeStage =
   | "unpaid"
   | "unknown"
 
+/* ============================ 采购截图识别 ============================ */
+
+/** 截图里识别出的一行采购明细（数字可能为 null，人工核对后再导入） */
+export interface RecognizedPurchaseRow {
+  name: string
+  spec: string
+  quantity: number
+  /** 一件的价格；截图里只有行金额时会由 行金额 ÷ 数量 算出来 */
+  unitPrice: number | null
+  amount: number | null
+}
+
+export interface RecognizedPurchase {
+  platform: string
+  date: string
+  rows: RecognizedPurchaseRow[]
+  /** 没有识别出东西时给一句人话提示 */
+  note: string
+}
+
 export interface SalesOrder {
   id: string
   order_no: string

@@ -238,6 +238,22 @@ Settings → Edge Functions → Secrets → 新增：
 
 > 没部署时页面只会提示「未配置自动识图，手填关键词就行」——**这是正常降级，不是故障**。
 
+### 另一个用同一套密钥的函数：采购截图识别（`recognize-purchase`）
+
+「入仓管理 → 批量导入」里的**「上传截图识别」**用它：把拼多多 / 淘宝 / 1688 的
+采购订单截图丢进去（或直接 Command+V 粘贴），自动读出「商品、规格、数量、单价」，
+填进预览表里让你核对、补 SPUID（填货号也行，会自动认），确认后一次导入。
+
+部署方式和上面完全一样（**密钥共用，不用重复配**）：
+
+Edge Functions → Deploy a new function → Via Editor → 函数名 **`recognize-purchase`**（必须一致）→
+把 `app/supabase/functions/recognize-purchase/index.ts` 整段粘贴进去 → Deploy
+（"Verify JWT with legacy secret" 保持**关闭**）。
+
+> 不部署也能用——「粘贴表格 / 上传 Excel」那条路一直都在，只是没有截图识别而已。
+> ⚠️ 识别结果**一定要核对**：视觉模型看密集列表会看错数字，金额错了比手填更糟。
+> 所以预览表里 SPUID / 数量 / 单价都是可以直接改的。
+
 ## 六之五、从得物后台导入订单（已支持，不需要任何配置）
 
 「销售订单」页 → **导入订单** → 直接把**得物商家后台（stark.dewu.com）导出的订单文件**拖进去即可，
