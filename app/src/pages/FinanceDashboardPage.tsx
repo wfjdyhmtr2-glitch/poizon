@@ -151,7 +151,11 @@ export function FinanceDashboardPage() {
           label="已卖件数"
           value={`${data.soldUnits} 件`}
           icon={<PackageSearch className="size-5" />}
-          hint={`结算金额合计 ${formatCompact(data.soldIncome)}`}
+          hint={
+            data.soldIncomeFromStatement > 0
+              ? `结算金额合计 ${formatCompact(data.soldIncome)}（其中 ${data.soldIncomeFromStatement} 单是对账单实际金额）`
+              : `结算金额合计 ${formatCompact(data.soldIncome)}`
+          }
         />
         <StatCard
           label="已卖盈亏"

@@ -71,7 +71,7 @@ async function fetchAllPages<T>(
 
 /** trade_stage 是数据库生成列，只读不写 */
 const SALES_COLUMNS =
-  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,tag,paid_at,resolved_sku,trade_stage,created_at,updated_at"
+  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,settled_amount,settled_at,after_sales,tag,paid_at,resolved_sku,trade_stage,created_at,updated_at"
 
 const SALES_SORT_MAP: Record<string, { column: string; ascending: boolean }> = {
   paid_desc: { column: "paid_at", ascending: false },
@@ -584,7 +584,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
       const pos = await fetchAllPages<Record<string, unknown>>((from, to) =>
         client()
           .from("purchase_orders")
-          .select("id,order_no,platform,purchased_at,shipping_fee,remark,created_at,updated_at")
+          .select("id,order_no,platform,purchased_at,shipping_fee,remark,count_stock,created_at,updated_at")
           .order("created_at", { ascending: false })
           .range(from, to),
       )
@@ -604,8 +604,9 @@ export function createCloudBackend(config: CloudConfig): Backend {
       return pos.map((r) => normalizePurchaseOrder(r, byPo.get(String(r.id)) ?? []))
     },
 
-    async createPurchaseOrder(draft) {
+    async createPurchaseOrder(draft, options) {
       if (!draft.items.length) throw new BackendError("请至少添加一行采购明细")
+      const costOnly = options?.costOnly === true
       const { data: po, error } = await client()
         .from("purchase_orders")
         .insert({
@@ -614,8 +615,9 @@ export function createCloudBackend(config: CloudConfig): Backend {
           purchased_at: draft.purchased_at || null,
           shipping_fee: draft.shipping_fee,
           remark: draft.remark || null,
+          count_stock: !costOnly,
         })
-        .select("id,order_no,platform,purchased_at,shipping_fee,remark,created_at,updated_at")
+        .select("id,order_no,platform,purchased_at,shipping_fee,remark,count_stock,created_at,updated_at")
         .single()
       if (error) throw new BackendError(translateDbError(error.message))
       const { data: items, error: itemError } = await client()
@@ -634,7 +636,13 @@ export function createCloudBackend(config: CloudConfig): Backend {
         )
         .select("id,purchase_order_id,sku,color,size,quantity,unit_cost")
       if (itemError) throw new BackendError(translateDbError(itemError.message))
-      await applyPurchaseToStock(client(), (items ?? []) as unknown as Record<string, unknown>[], 1, draft.platform || null)
+      await applyPurchaseToStock(
+        client(),
+        (items ?? []) as unknown as Record<string, unknown>[],
+        1,
+        draft.platform || null,
+        { costOnly },
+      )
       return normalizePurchaseOrder(po as Record<string, unknown>, (items ?? []) as Record<string, unknown>[])
     },
 
@@ -682,9 +690,23 @@ export function createCloudBackend(config: CloudConfig): Backend {
         .select("id,purchase_order_id,sku,color,size,quantity,unit_cost")
         .in("purchase_order_id", ids)
       if (error) throw new BackendError(translateDbError(error.message))
+      // 补录历史采购的入仓单从来没加过库存，删单时也不能回退（否则库存会被扣成负的）
+      const { data: heads } = await client()
+        .from("purchase_orders")
+        .select("id,count_stock")
+        .in("id", ids)
+      const stockIds = new Set(
+        ((heads ?? []) as { id: string; count_stock: boolean | null }[])
+          .filter((h) => h.count_stock !== false)
+          .map((h) => String(h.id)),
+      )
       const { error: delError } = await client().from("purchase_orders").delete().in("id", ids)
       if (delError) throw new BackendError(translateDbError(delError.message))
-      if (items?.length) await applyPurchaseToStock(client(), items as unknown as Record<string, unknown>[], -1)
+      const stockItems = (items ?? []).filter((it) =>
+        stockIds.has(String((it as Record<string, unknown>).purchase_order_id)),
+      )
+      if (stockItems.length)
+        await applyPurchaseToStock(client(), stockItems as unknown as Record<string, unknown>[], -1)
     },
 
     /* ---------- 其他费用（不绑定商品，计入盈亏）---------- */
@@ -1153,6 +1175,8 @@ function normalizePurchaseOrder(
     purchased_at: (row.purchased_at as string) ?? null,
     shipping_fee: nullableNumber(row.shipping_fee),
     remark: (row.remark as string) ?? null,
+    // 老库没这列时按 true（计入库存）处理
+    count_stock: row.count_stock === undefined || row.count_stock === null ? true : Boolean(row.count_stock),
     items: items.map((it) => ({
       id: String(it.id),
       sku: String(it.sku ?? ""),
@@ -1174,6 +1198,10 @@ function normalizePurchaseOrder(
  *   并用明细里的名称、售价、颜色、尺码补全资料。
  * - sign=-1 删除入仓单：只回退库存，商品档案保留。
  * 加权平均 = (当前库存×现成本 + 入仓件数×入仓单价) / (当前库存 + 入仓件数)。
+ *
+ * costOnly（补录历史采购）：
+ * - **不动库存**（历史买的东西多半早卖掉了，加库存会虚高）；
+ * - 成本按**累计进货量**加权（所有入仓明细一起算），所以分批补录也能得到正确均价。
  */
 async function applyPurchaseToStock(
   // 用最小接口而非 SupabaseClient 泛型，避免版本参数不匹配
@@ -1181,7 +1209,9 @@ async function applyPurchaseToStock(
   items: Record<string, unknown>[],
   sign: 1 | -1,
   platform: string | null = null,
+  options: { costOnly?: boolean } = {},
 ) {
+  const costOnly = options.costOnly === true && sign === 1
   interface Agg {
     qty: number
     costSum: number
@@ -1222,6 +1252,21 @@ async function applyPurchaseToStock(
     ]),
   )
 
+  // 补录模式：成本以「累计进货」为权重（含刚写入的这批），而不是以库存为权重
+  const historyAvg = new Map<string, number>()
+  if (costOnly) {
+    const { data: allItems } = await cli.from("purchase_order_items").select("sku,quantity,unit_cost")
+    const sum = new Map<string, { qty: number; cost: number }>()
+    for (const r of ((allItems ?? []) as { sku: string; quantity: number; unit_cost: number | null }[])) {
+      if (r.unit_cost === null || r.unit_cost === undefined) continue
+      const cur = sum.get(String(r.sku)) ?? { qty: 0, cost: 0 }
+      cur.qty += Number(r.quantity ?? 0)
+      cur.cost += Number(r.unit_cost) * Number(r.quantity ?? 0)
+      sum.set(String(r.sku), cur)
+    }
+    for (const [k, v] of sum) if (v.qty > 0) historyAvg.set(k, Number((v.cost / v.qty).toFixed(2)))
+  }
+
   const now = new Date().toISOString()
   for (const [sku, agg] of bySku) {
     const info = infoBySku.get(sku) ?? null
@@ -1253,8 +1298,9 @@ async function applyPurchaseToStock(
         purchase_platform: platform,
         // 售价 = 该款进货均价（Σ进货总价 ÷ Σ进货数量），随入仓自动算出
         price: agg.costQty > 0 ? Number((agg.costSum / agg.costQty).toFixed(2)) : 0,
-        cost_price: incomingCost,
-        stock: agg.qty,
+        cost_price: costOnly ? (historyAvg.get(sku) ?? incomingCost) : incomingCost,
+        // 补录历史采购不加库存，只建成本档案
+        stock: costOnly ? 0 : agg.qty,
         locked_stock: 0,
         stock_alert: 5,
         status: "on_sale",
@@ -1273,16 +1319,21 @@ async function applyPurchaseToStock(
     const oldCost = current.cost_price === null ? null : Number(current.cost_price)
     let newCost = oldCost
     if (agg.costQty > 0) {
-      const baseQty = Math.max(0, stock)
-      const baseCost = (oldCost ?? 0) * baseQty
-      newCost = Number(((baseCost + agg.costSum) / (baseQty + agg.costQty)).toFixed(2))
+      if (costOnly) {
+        newCost = historyAvg.get(sku) ?? incomingCost
+      } else {
+        const baseQty = Math.max(0, stock)
+        const baseCost = (oldCost ?? 0) * baseQty
+        newCost = Number(((baseCost + agg.costSum) / (baseQty + agg.costQty)).toFixed(2))
+      }
     }
     const oldColors = Array.isArray(current.colors) ? (current.colors as string[]) : []
     const oldSizes = Array.isArray(current.sizes) ? (current.sizes as string[]) : []
     const { error } = await cli
       .from("products")
       .update({
-        stock: stock + agg.qty,
+        // 补录模式不动库存
+        ...(costOnly ? {} : { stock: stock + agg.qty }),
         cost_price: newCost,
         name: current.name || agg.name || info?.name || sku,
         price: info?.price ?? current.price ?? 0,
@@ -1327,6 +1378,9 @@ function normalizeSales(row: Record<string, unknown>): SalesOrder {
     is_settled: Boolean(row.is_settled),
     bid_amount: nullableNumber(row.bid_amount),
     expected_income: nullableNumber(row.expected_income),
+    // 老库可能还没这两列，读不到就为 null
+    settled_amount: nullableNumber(row.settled_amount),
+    settled_at: (row.settled_at as string) ?? null,
     after_sales: (row.after_sales as string) ?? null,
     tag: (row.tag as string) ?? null,
     paid_at: (row.paid_at as string) ?? null,

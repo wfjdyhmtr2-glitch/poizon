@@ -106,6 +106,9 @@ export function buildDewuOrderRow(raw: Record<string, unknown>, rowNo: number): 
     is_settled: false,
     bid_amount: bid,
     expected_income: income,
+    // 得物导出文件里没有结算信息，等对账单同步
+    settled_amount: null,
+    settled_at: null,
     after_sales: text("关闭原因") || null,
     // 标签：优先用系统模板里的「标签」列；得物原生导出没有这列，
     // 退而用「订单类型」（品牌直发 / 入仓 …）当标记——只展示，不参与盈亏

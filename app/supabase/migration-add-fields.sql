@@ -156,6 +156,8 @@ create table if not exists public.purchase_orders (
   purchased_at date,
   shipping_fee numeric(12,2),
   remark       text,
+  -- 是否把这张单计入库存：false = 只为补成本档案而录的历史采购（不动库存）
+  count_stock  boolean not null default true,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
@@ -216,6 +218,9 @@ create table if not exists public.sales_orders (
   -- 履约方式等标记（寄售 / 现货、优先发货、换新、分享送礼…），仅作展示，不参与盈亏
   tag             text,
   paid_at         timestamptz,
+  -- 平台实际结算金额与结算（到账）时间，来源：得物「财务 → 实时对账单」
+  settled_amount  numeric(12,2),
+  settled_at      timestamptz,
   trade_stage     text generated always as (case
                       when order_status ~ '交易失败|未付款|待付款|已取消|付款失败|失败' then 'unpaid'
                       when order_status ~ '关闭成功|交易关闭|已关闭|取消成功' then 'refund_before_ship'
@@ -607,6 +612,11 @@ alter table public.products             add column if not exists owner_id uuid;
 alter table public.sales_orders         add column if not exists owner_id uuid;
 -- 履约标签（老库升级用；必须在任何引用该列的语句之前）
 alter table public.sales_orders         add column if not exists tag text;
+-- 结算金额 / 结算时间（老库升级用；来源：得物「财务 → 实时对账单」）
+alter table public.sales_orders         add column if not exists settled_amount numeric(12,2);
+alter table public.sales_orders         add column if not exists settled_at timestamptz;
+-- 入仓单是否计入库存（false = 补录历史采购、只更新成本档案）
+alter table public.purchase_orders      add column if not exists count_stock boolean not null default true;
 alter table public.spu_mappings         add column if not exists owner_id uuid;
 alter table public.product_images       add column if not exists owner_id uuid;
 alter table public.purchase_orders      add column if not exists owner_id uuid;

@@ -526,6 +526,7 @@ export function SalesOrdersPage() {
                     <TableHead className="w-[122px]">交易阶段</TableHead>
                     <TableHead className="w-[96px]">出价</TableHead>
                     <TableHead className="w-[104px]">预计收入</TableHead>
+                    <TableHead className="w-[104px]">实际结算</TableHead>
                     <TableHead className="w-[84px]">结算</TableHead>
                     <TableHead className="w-[140px]">标签</TableHead>
                     <TableHead className="w-[150px]">支付时间</TableHead>
@@ -594,6 +595,20 @@ export function SalesOrdersPage() {
                           >
                             {o.expected_income === null ? "—" : formatMoney(o.expected_income)}
                           </span>
+                        </TableCell>
+                        <TableCell className="text-sm tabular-nums">
+                          {o.settled_amount === null ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span
+                              className="font-medium"
+                              title={
+                                o.settled_at ? `结算时间 ${formatDateTime(o.settled_at)}` : undefined
+                              }
+                            >
+                              {formatMoney(o.settled_amount)}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell>
                           {o.is_settled ? (
@@ -736,6 +751,12 @@ export function SalesOrdersPage() {
                         >
                           {o.expected_income === null ? "—" : formatMoney(o.expected_income)}
                         </p>
+                        {o.settled_amount !== null ? (
+                          <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+                            实际结算 {formatMoney(o.settled_amount)}
+                            {o.settled_at ? ` · ${formatDateTime(o.settled_at)}` : ""}
+                          </p>
+                        ) : null}
                         <p className="text-[11px] text-muted-foreground">
                           出价 {o.bid_amount === null ? "—" : formatMoney(o.bid_amount)} ·{" "}
                           {formatDateTime(o.paid_at)}

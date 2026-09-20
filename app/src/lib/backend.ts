@@ -95,7 +95,11 @@ export interface Backend {
   /* ---------- 入仓单（采购订单维度）---------- */
   listPurchaseOrders(): Promise<PurchaseOrder[]>
   /** 创建并确认入仓：明细数量加入商品库存，成本价按加权平均更新 */
-  createPurchaseOrder(draft: PurchaseOrderDraft): Promise<PurchaseOrder>
+  createPurchaseOrder(
+    draft: PurchaseOrderDraft,
+    /** costOnly = 补录历史采购：只更新成本档案（加权平均），不改库存 */
+    options?: { costOnly?: boolean },
+  ): Promise<PurchaseOrder>
   /** 删除入仓单并把对应数量从库存回退（成本价保持不变） */
   deletePurchaseOrders(ids: string[]): Promise<void>
   /** 删除某款下的一个规格（二级单元）：清掉对应采购明细并把数量从库存回退 */

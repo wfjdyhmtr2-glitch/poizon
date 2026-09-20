@@ -160,6 +160,13 @@ export function buildDemoSalesOrders(products: Product[]): SalesOrder[] {
       is_settled: mix.status === "交易成功" && !mix.returned && daysAgo > 12,
       bid_amount: Number((product.price * (0.96 + (i % 5) * 0.02)).toFixed(2)),
       expected_income: charges,
+      // 演示模式：已结算的单子给一个「实际结算金额」（比预计收入略少，像真实扣费后的到账）
+      settled_amount: mix.status === "交易成功" && !mix.returned && daysAgo > 12 && charges !== null
+        ? Number((charges * 0.985).toFixed(2))
+        : null,
+      settled_at: mix.status === "交易成功" && !mix.returned && daysAgo > 12
+        ? new Date(Date.now() - (daysAgo - 3) * 86400_000).toISOString()
+        : null,
       after_sales: afterSales,
       // 履约标签：演示几种常见组合，界面上能看到效果
       tag: ["寄售", "优先发货寄售", "普通现货", "优先发货寄售换新"][i % 4],

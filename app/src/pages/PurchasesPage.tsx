@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ClipboardList, Loader2, PackagePlus, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import {
+  ClipboardList,
+  FileSpreadsheet,
+  Loader2,
+  PackagePlus,
+  Plus,
+  RefreshCcw,
+  Trash2,
+} from "lucide-react"
 import { useApp } from "@/contexts/AppContext"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -23,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { EmptyState, PageHeader } from "@/components/common"
+import { PurchaseImportDialog } from "@/components/PurchaseImportDialog"
 import { presetRange, SALES_RANGE_PRESETS, type SalesRangePreset } from "@/lib/sales"
 import { PURCHASE_PLATFORMS } from "@/lib/constants"
 import { formatMoney } from "@/lib/format"
@@ -58,6 +67,7 @@ export function PurchasesPage() {
   const [customEnd, setCustomEnd] = useState("")
   const [spuInfos, setSpuInfos] = useState<SpuInfo[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [orderNo, setOrderNo] = useState("")
   const [platform, setPlatform] = useState("")
@@ -205,6 +215,10 @@ export function PurchasesPage() {
               <RefreshCcw className={cn("size-4", loading && "animate-spin")} />
               刷新
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+              <FileSpreadsheet className="size-4" />
+              批量导入
+            </Button>
             <Button size="sm" onClick={openCreate}>
               <PackagePlus className="size-4" />
               新建入仓单
@@ -259,12 +273,18 @@ export function PurchasesPage() {
           <EmptyState
             icon={<ClipboardList className="size-5" />}
             title="还没有入仓单"
-            description="点「新建入仓单」记录一次采购：选款、填数量和单价，确认后库存与成本自动更新。"
+            description="点「新建入仓单」记录一次采购；也可以「批量导入」把各平台的采购表一次性导进来（支持只补成本、不动库存）。"
             action={
-              <Button size="sm" onClick={openCreate}>
-                <Plus className="size-4" />
-                新建入仓单
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                  <FileSpreadsheet className="size-4" />
+                  批量导入
+                </Button>
+                <Button size="sm" onClick={openCreate}>
+                  <Plus className="size-4" />
+                  新建入仓单
+                </Button>
+              </div>
             }
           />
         </Card>
@@ -295,6 +315,13 @@ export function PurchasesPage() {
                     <TableRow key={po.id}>
                       <TableCell>
                         <p className="font-mono text-xs font-medium">{po.order_no}</p>
+                        {po.count_stock === false ? (
+                          <p className="mt-0.5">
+                            <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                              仅成本·不计库存
+                            </span>
+                          </p>
+                        ) : null}
                         {po.remark ? (
                           <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
                             {po.remark}
@@ -364,6 +391,13 @@ export function PurchasesPage() {
           </div>
         </Card>
       )}
+
+      <PurchaseImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        spuInfos={spuInfos}
+        onDone={load}
+      />
 
       {/* 新建入仓单 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

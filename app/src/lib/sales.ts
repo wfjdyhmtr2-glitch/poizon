@@ -118,6 +118,8 @@ export function emptySalesDraft(): SalesOrderDraft {
     is_settled: false,
     bid_amount: null,
     expected_income: null,
+    settled_amount: null,
+    settled_at: null,
     after_sales: "",
     tag: "",
     paid_at: new Date().toISOString(),
@@ -360,6 +362,8 @@ export function buildSalesDashboard(
   for (const o of orders) {
     const meta = TRADE_STAGE_META[o.trade_stage] ?? TRADE_STAGE_META.unknown
     const income = o.expected_income ?? 0
+    // 已结算的单子用对账单同步来的「实际结算金额」，没同步到才回退预计收入
+    const incomeIfSettled = o.settled_amount ?? income
     const bid = o.bid_amount ?? 0
 
     const effect = orderStockEffect(o.order_status, o.is_returned, o.is_settled)
@@ -374,9 +378,9 @@ export function buildSalesDashboard(
     totalBid += bid
     if (meta.countsAsIncome) {
       completedOrders += 1
-      totalIncome += income
+      totalIncome += incomeIfSettled
       if (o.is_settled) {
-        settledIncome += income
+        settledIncome += incomeIfSettled
         settledCount += 1
       } else {
         unsettledIncome += income
@@ -385,7 +389,7 @@ export function buildSalesDashboard(
       const spuKey = resolveSku(o.sku)
       const spu = spuMap.get(spuKey) ?? { orders: 0, income: 0 }
       spu.orders += 1
-      spu.income += income
+      spu.income += incomeIfSettled
       spuMap.set(spuKey, spu)
     } else if (o.trade_stage !== "unpaid" && o.trade_stage !== "unknown") {
       // 退款类订单计入待处理但不算收入，单独统计结算状态

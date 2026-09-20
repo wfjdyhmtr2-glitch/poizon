@@ -337,7 +337,14 @@ export function SalesOrderFormDialog({
             <Switch
               id="is-settled"
               checked={draft.is_settled}
-              onCheckedChange={(v) => patch({ is_settled: v })}
+              onCheckedChange={(v) =>
+                patch({
+                  is_settled: v,
+                  // 结算金额/时间由对账单同步；手动勾选时先清空，避免留下对不上的旧值
+                  settled_amount: v ? draft.settled_amount : null,
+                  settled_at: v ? draft.settled_at : null,
+                })
+              }
             />
           </div>
 

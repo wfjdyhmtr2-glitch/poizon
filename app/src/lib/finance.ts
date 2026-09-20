@@ -32,8 +32,10 @@ export interface FinanceSummary {
   onhandInvestment: number
   /** 一共卖了多少件（正常成交） */
   soldUnits: number
-  /** 已卖的结算金额合计 */
+  /** 已卖的结算金额合计（优先用平台实际结算金额，缺失回退预计收入） */
   soldIncome: number
+  /** 上面这笔里，有多少件是「对账单同步来的实际结算金额」（其余是按预计收入估的） */
+  soldIncomeFromStatement: number
   soldCost: number
   soldShipping: number
   soldRebate: number
@@ -98,6 +100,7 @@ export function buildFinanceSummary(
   }
 
   let unmatchedSoldOrders = 0
+  let soldIncomeFromStatement = 0
 
   for (const o of orders) {
     if (o.trade_stage !== "completed") continue
@@ -108,7 +111,10 @@ export function buildFinanceSummary(
       continue
     }
     const row = rowOf(sku)
-    const income = o.expected_income ?? 0
+    // 有平台实际结算金额就用它，没同步到才退回「预计收入」
+    const actual = o.settled_amount
+    const income = actual ?? o.expected_income ?? 0
+    if (actual !== null && actual !== undefined) soldIncomeFromStatement += 1
     const cost = product.cost_price ?? 0
     const shipping = product.shipping_fee ?? 0
     const rebate = product.rebate ?? 0
@@ -165,6 +171,7 @@ export function buildFinanceSummary(
     onhandInvestment,
     soldUnits,
     soldIncome,
+    soldIncomeFromStatement,
     soldCost,
     soldShipping,
     soldRebate,

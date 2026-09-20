@@ -152,6 +152,13 @@ export interface SalesOrder {
   bid_amount: number | null
   /** 预计收入金额（元） */
   expected_income: number | null
+  /**
+   * 平台**实际结算金额**（元）—— 来自得物「财务 → 实时对账单」的「应结金额」。
+   * 未结算、或这笔还没同步过对账单数据时为 null；盈亏里优先用它，缺失才回退 expected_income。
+   */
+  settled_amount: number | null
+  /** 结算（到账）时间，同样来自对账单；未结算为 null */
+  settled_at: string | null
   after_sales: string | null
   /**
    * 履约方式等标记（如「寄售 · 优先发货」「普通现货 · 换新」）。
@@ -283,6 +290,11 @@ export interface PurchaseOrder {
   /** 本单运费（记录用，成本摊薄由运费模块接管） */
   shipping_fee: number | null
   remark: string | null
+  /**
+   * 是否把这张单计入库存。false = 补录历史采购（只为建成本档案），
+   * 不会加库存、删单时也不会回退库存。
+   */
+  count_stock: boolean
   items: PurchaseOrderItem[]
   created_at: string
   updated_at: string

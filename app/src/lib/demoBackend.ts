@@ -516,7 +516,13 @@ function normSpecDemo(color: string | null | undefined, size: string | null | un
 function readPurchaseStore(): PurchaseOrder[] {
   try {
     const raw = localStorage.getItem(PO_KEY)
-    if (raw) return JSON.parse(raw) as PurchaseOrder[]
+    if (raw) {
+      // 老数据可能没有 count_stock 字段，按 true（计入库存）兜底
+      return (JSON.parse(raw) as PurchaseOrder[]).map((o) => ({
+        ...o,
+        count_stock: o.count_stock !== false,
+      }))
+    }
     // 只在首次使用时种一次演示数据；之后删光就是空的，不会复活
     if (localStorage.getItem(PO_SEEDED_KEY)) return []
   } catch {
@@ -575,6 +581,7 @@ function readPurchaseStore(): PurchaseOrder[] {
       purchased_at: dateStr,
       shipping_fee: 12,
       remark: "演示入仓单",
+      count_stock: true,
       items,
       created_at: dateStr,
       updated_at: dateStr,
@@ -600,12 +607,32 @@ function writePurchaseStore(rows: PurchaseOrder[]) {
 /**
  * 入仓明细 → 商品库存（演示模式，与云端 applyPurchaseToStock 行为一致）：
  * sign=1 确认入仓（加库存 + 加权平均成本），sign=-1 删除回退。
+ * costOnly = 补录历史采购：不动库存，成本按「累计进货量」加权（含本次）。
  */
 function applyPurchaseToProducts(
   items: PurchaseOrder["items"],
   sign: 1 | -1,
   platform: string | null = null,
+  options: { costOnly?: boolean } = {},
 ): void {
+  const costOnly = options.costOnly === true && sign === 1
+  // 补录模式：先按「全部入仓明细」算累计加权均价
+  let historyAvg = new Map<string, number>()
+  if (costOnly) {
+    const sum = new Map<string, { qty: number; cost: number }>()
+    for (const po of readPurchaseStore()) {
+      for (const it of po.items) {
+        if (it.unit_cost === null || it.unit_cost === undefined) continue
+        const cur = sum.get(it.sku) ?? { qty: 0, cost: 0 }
+        cur.qty += it.quantity
+        cur.cost += it.unit_cost * it.quantity
+        sum.set(it.sku, cur)
+      }
+    }
+    historyAvg = new Map(
+      [...sum].filter(([, v]) => v.qty > 0).map(([k, v]) => [k, Number((v.cost / v.qty).toFixed(2))]),
+    )
+  }
   interface Agg {
     qty: number
     costSum: number
@@ -665,8 +692,9 @@ function applyPurchaseToProducts(
         net_price: null,
         platform_fee: null,
         shipping_fee: null,
-        cost_price: incomingCost,
-        stock: agg.qty,
+        cost_price: costOnly ? (historyAvg.get(sku) ?? incomingCost) : incomingCost,
+        // 补录历史采购不加库存
+        stock: costOnly ? 0 : agg.qty,
         locked_stock: 0,
         stock_alert: 5,
         rebate: null,
@@ -692,11 +720,13 @@ function applyPurchaseToProducts(
     const baseCost = (p.cost_price ?? 0) * baseQty
     const newCost =
       agg.costQty > 0
-        ? Number(((baseCost + agg.costSum) / (baseQty + agg.costQty)).toFixed(2))
+        ? costOnly
+          ? (historyAvg.get(sku) ?? incomingCost)
+          : Number(((baseCost + agg.costSum) / (baseQty + agg.costQty)).toFixed(2))
         : p.cost_price
     next[idx] = {
       ...p,
-      stock: p.stock + agg.qty,
+      ...(costOnly ? {} : { stock: p.stock + agg.qty }),
       cost_price: newCost,
       name: p.name || agg.name || info?.name || sku,
       price: info?.price ?? p.price,
@@ -982,7 +1012,15 @@ export function createDemoBackend(): Backend {
         if (!set.has(o.id) || o.is_settled === settled) return o
         // 结算状态变化会改变订单对库存的影响（占用 → 核销），先撤销旧影响再应用新影响
         products = applyOrderStock(products, o, -1)
-        const next = { ...o, is_settled: settled, updated_at: now }
+        // 演示模式没有对账单来源，标记已结算时就按预计收入补一个「实际结算金额」，
+        // 并记下结算时间；取消结算则清掉（云端这两列由对账单同步写入）
+        const next = {
+          ...o,
+          is_settled: settled,
+          settled_amount: settled ? (o.settled_amount ?? o.expected_income ?? null) : null,
+          settled_at: settled ? (o.settled_at ?? now) : null,
+          updated_at: now,
+        }
         products = applyOrderStock(products, next, 1)
         return next
       })
@@ -1167,8 +1205,9 @@ export function createDemoBackend(): Backend {
       return readPurchaseStore()
     },
 
-    async createPurchaseOrder(draft) {
+    async createPurchaseOrder(draft, options) {
       if (!draft.items.length) throw new BackendError("请至少添加一行采购明细")
+      const costOnly = options?.costOnly === true
       const now = new Date().toISOString()
       const order: PurchaseOrder = {
         id: uid(),
@@ -1177,6 +1216,7 @@ export function createDemoBackend(): Backend {
         purchased_at: draft.purchased_at || null,
         shipping_fee: draft.shipping_fee,
         remark: draft.remark || null,
+        count_stock: !costOnly,
         items: draft.items.map((it, i) => ({
           id: uid() + "-" + i,
           sku: it.sku,
@@ -1191,7 +1231,7 @@ export function createDemoBackend(): Backend {
         updated_at: now,
       }
       writePurchaseStore([order, ...readPurchaseStore()])
-      applyPurchaseToProducts(order.items, 1, order.platform)
+      applyPurchaseToProducts(order.items, 1, order.platform, { costOnly })
       return order
     },
 
@@ -1231,7 +1271,11 @@ export function createDemoBackend(): Backend {
       const set = new Set(ids)
       const rows = readPurchaseStore()
       const removed = rows.filter((o) => set.has(o.id))
-      for (const po of removed) applyPurchaseToProducts(po.items, -1)
+      // 补录历史采购的单子没加过库存，删单也不回退
+      for (const po of removed) {
+        if (po.count_stock === false) continue
+        applyPurchaseToProducts(po.items, -1)
+      }
       writePurchaseStore(rows.filter((o) => !set.has(o.id)))
     },
 

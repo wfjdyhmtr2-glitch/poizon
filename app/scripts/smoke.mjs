@@ -591,6 +591,72 @@ async function main() {
   console.log("  关闭弹窗:", await clickByText("取消"))
   await sleep(1200)
 
+  console.log("\n=== 8c2. 入仓单批量导入（补录历史采购：不动库存、只更新成本）===")
+  // 挑一个演示商品，记下导入前的库存与成本
+  const poBefore = await evaluate(`(() => {
+    const rows = JSON.parse(localStorage.getItem('yunguan.demo.products.v1') || '[]');
+    const p = rows.find(r => r.sku);
+    return p ? { sku: p.sku, stock: p.stock, cost: p.cost_price } : null;
+  })()`)
+  console.log("  测试用商品:", poBefore)
+  await clickByText("批量导入")
+  await sleep(900)
+  const poDialogText = await bodyText()
+  console.log("  弹窗已打开:", poDialogText.includes("批量导入采购"))
+  console.log(
+    "  含「只补成本」说明:",
+    poDialogText.includes("补录历史采购") && poDialogText.includes("不动库存"),
+  )
+  // 粘贴一张表（走 textarea 的 onBlur 解析）
+  const poTable = [
+    "入仓单号\t平台\t采购日期\tSPUID\t颜色\t尺码\t数量\t进货单价",
+    `\t1688\t2026-09-01\t${poBefore.sku}\t黑色\tM\t4\t66`,
+  ].join("\n")
+  // 注意：这是 textarea，要用 HTMLTextAreaElement 的 value setter（HTMLInputElement 的会报 Illegal invocation）
+  // 而且解析走 onBlur，所以得先 focus、改值、再 blur 才会触发
+  const filled = await evaluate(`(() => {
+    const el = document.querySelector('#po-import-text');
+    if (!el) return false;
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(el, ${JSON.stringify('__TABLE__')});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`.replace('"__TABLE__"', JSON.stringify(poTable)))
+  console.log("  填入表格:", filled)
+  await evaluate(`(() => { const el = document.querySelector('#po-import-text'); if (el) el.blur(); })()`)
+  await sleep(1000)
+  const poPreviewText = await bodyText()
+  console.log("  解析出 1 张入仓单:", poPreviewText.includes("将创建") && poPreviewText.includes("1"))
+  console.log("  采购金额合计已算出:", poPreviewText.includes("采购金额合计"))
+  await shot("08c3-purchase-import-preview")
+  // 取消勾选「计入库存」
+  const poUntick = await evaluate(`(() => {
+    const el = document.querySelector('[aria-label="计入库存"]');
+    if (!el) return false; el.click(); return true;
+  })()`)
+  console.log("  取消勾选「计入库存」:", poUntick)
+  await sleep(500)
+  const poDoImport = await evaluate(`(() => {
+    const b = [...document.querySelectorAll('button')].find(x => /张入仓单/.test(x.innerText||''));
+    if (!b) return false; b.click(); return true;
+  })()`)
+  console.log("  点导入:", poDoImport)
+  await sleep(4000)
+  await dismissToasts()
+  const poAfterState = await evaluate(`(() => {
+    const rows = JSON.parse(localStorage.getItem('yunguan.demo.products.v1') || '[]');
+    const p = rows.find(r => r.sku === ${JSON.stringify(poBefore.sku)});
+    return p ? { stock: p.stock, cost: p.cost_price } : null;
+  })()`)
+  console.log("  导入后商品:", poAfterState)
+  console.log("  ✅ 库存没变:", poAfterState?.stock === poBefore.stock)
+  console.log("  ✅ 成本更新为 66:", poAfterState?.cost === 66)
+  const poListText = await bodyText()
+  console.log("  入仓单已出现:", poListText.includes("导入") || poListText.includes("仅成本"))
+  console.log("  标了「仅成本·不计库存」:", poListText.includes("仅成本·不计库存"))
+  await shot("08c4-purchase-import-done")
+
   console.log("\n=== 8d. 其他费用（不绑定商品，计入盈亏）===")
   await goto(`${BASE}/#/other-expenses`, 2200)
   const oeText = await bodyText()
@@ -886,6 +952,40 @@ async function main() {
     "  商品缩略图已渲染:",
     (await evaluate("document.querySelectorAll('table img').length")) > 0,
   )
+  // 「实际结算」列：表头在，且已结算的演示单子要显示出金额（不是全占位符）
+  const settledCells = await evaluate(`(() => {
+    const heads = [...document.querySelectorAll('table thead th')].map(th => (th.innerText||'').trim());
+    const idx = heads.indexOf('实际结算');
+    if (idx < 0) return JSON.stringify({ 有列: false });
+    const vals = [...document.querySelectorAll('table tbody tr')]
+      .map(tr => tr.children[idx]?.innerText?.trim())
+      .filter(v => v && v !== '—');
+    return JSON.stringify({ 有列: true, 有值的行数: vals.length, 样例: vals.slice(0, 3) });
+  })()`)
+  const settledInfo = JSON.parse(settledCells)
+  console.log("  订单列表有「实际结算」列:", settledInfo.有列)
+  // 列表默认按支付时间倒序，第一页都是最近的单子（未结算），所以金额要从数据层断言
+  const settledData = JSON.parse(
+    await evaluate(`(() => {
+      const rows = JSON.parse(localStorage.getItem('yunguan.demo.sales.v1') || '[]');
+      const done = rows.filter((r) => r.is_settled);
+      const withAmount = done.filter((r) => typeof r.settled_amount === 'number');
+      const badUnsettled = rows.filter((r) => !r.is_settled && r.settled_amount != null).length;
+      return JSON.stringify({
+        总: rows.length,
+        已结算: done.length,
+        已结算带金额: withAmount.length,
+        未结算却带金额: badUnsettled,
+        样例: withAmount[0] ? withAmount[0].settled_amount : null,
+      });
+    })()`),
+  )
+  console.log(
+    "  演示数据：已结算的单子都有结算金额:",
+    settledData.已结算 > 0 && settledData.已结算带金额 === settledData.已结算,
+    `(${settledData.已结算带金额}/${settledData.已结算}，样例 ¥${settledData.样例})`,
+  )
+  console.log("  未结算的单子没有结算金额:", settledData.未结算却带金额 === 0)
   await shot("13-sales-orders")
 
   console.log("\n=== 10b. 订单时间筛选 ===")

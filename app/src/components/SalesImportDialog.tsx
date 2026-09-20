@@ -658,6 +658,9 @@ function buildRow(raw: Record<string, unknown>, rowNo: number): SalesImportRow {
     is_settled: isSettled,
     bid_amount: bid,
     expected_income: income,
+    // 实际结算金额要等「得物对账单」同步后才有
+    settled_amount: null,
+    settled_at: null,
     after_sales: text("售后服务") || null,
     tag: text("标签") || null,
     paid_at: paidAt,

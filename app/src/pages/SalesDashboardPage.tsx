@@ -256,7 +256,7 @@ export function SalesDashboardPage() {
           value={formatCompact(data.unsettledIncome)}
           icon={<TrendingUp className="size-5" />}
           tone={data.unsettledIncome > 0 ? "warning" : "default"}
-          hint={`已结 ${formatCompact(data.settledIncome)} · ${data.unsettledCount} 条未结`}
+          hint={`已结（实际到账）${formatCompact(data.settledIncome)} · ${data.unsettledCount} 条未结`}
         />
       </div>
 
