@@ -620,6 +620,38 @@ async function main() {
     await evaluate(`document.querySelector('#oe-date')?.value ?? '(空)'`),
   )
 
+  console.log("  — 费用类别 / 平台：候选要选得到（唯品会开会员这类不能只能靠手打）—")
+  const oeChips = await evaluate(`(() => {
+    const chips = [...document.querySelectorAll('main button')].map(b => (b.textContent || '').trim());
+    return chips.filter(c => c.length && c.length <= 6);
+  })()`)
+  console.log("  平台候选含「唯品会」:", oeChips.includes("唯品会"))
+  console.log("  类别候选含「会员费」:", oeChips.includes("会员费"))
+  console.log("  点「唯品会」快捷选平台:", await clickByText("唯品会"))
+  console.log(
+    "    → 平台框 =",
+    await evaluate(`document.querySelector('#oe-platform')?.value ?? '(空)'`),
+  )
+  console.log("  展开类别下拉:", await clickByLabel("费用类别展开候选"))
+  await sleep(900)
+  const oeCatOptions = await evaluate(
+    `[...document.querySelectorAll('[data-slot="popover-content"] button')].map(b => (b.textContent || '').trim())`,
+  )
+  console.log("    下拉里共", oeCatOptions.length, "个候选，含「鉴定费」:", oeCatOptions.includes("鉴定费"))
+  console.log("    候选数量 ≥ 10:", oeCatOptions.length >= 10)
+  await shot("08d3-category-options")
+  const oePicked = await evaluate(`(() => {
+    const item = [...document.querySelectorAll('[data-slot="popover-content"] button')]
+      .find(b => (b.textContent || '').trim() === '会员费');
+    if (!item) return false; item.click(); return true;
+  })()`)
+  await sleep(600)
+  console.log("  从下拉里选「会员费」:", oePicked)
+  console.log(
+    "    → 类别框 =",
+    await evaluate(`document.querySelector('#oe-category')?.value ?? '(空)'`),
+  )
+
   console.log("  — 记一笔（含负数方向）—")
   console.log("  金额框可填:", await setInput("#oe-amount", "123.45"))
   await setInput("#oe-category", "冒烟费用")
@@ -630,6 +662,22 @@ async function main() {
   const oeAdded = await bodyText()
   console.log("  新增记录已出现:", oeAdded.includes("冒烟费用"))
   await shot("08d2-other-expense-added")
+
+  console.log("  — 手写过的值下次要自动进候选 —")
+  console.log("  再展开类别下拉:", await clickByLabel("费用类别展开候选"))
+  await sleep(900)
+  const oeCatOptions2 = await evaluate(
+    `[...document.querySelectorAll('[data-slot="popover-content"] button')].map(b => (b.textContent || '').trim())`,
+  )
+  console.log("    候选里已含「冒烟费用」:", oeCatOptions2.includes("冒烟费用"))
+  // 选一个内置项把下拉收起来，否则弹层里的文字会让后面「删除后已消失」误判
+  const oeClose = await evaluate(`(() => {
+    const item = [...document.querySelectorAll('[data-slot="popover-content"] button')]
+      .find(b => (b.textContent || '').trim() === '保证金');
+    if (!item) return false; item.click(); return true;
+  })()`)
+  await sleep(600)
+  console.log("    收起下拉（选回保证金）:", oeClose)
 
   console.log("  — 删除刚记的这笔 —")
   const oeDel = await evaluate(`(() => {

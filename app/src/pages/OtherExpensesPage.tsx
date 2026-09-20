@@ -22,8 +22,9 @@ import {
   PageHeader,
   StatCard,
 } from "@/components/common"
+import { OptionCombobox } from "@/components/OptionCombobox"
 import { useApp } from "@/contexts/AppContext"
-import { OTHER_EXPENSE_CATEGORIES, OTHER_EXPENSE_PLATFORMS } from "@/lib/constants"
+import { OTHER_EXPENSE_CATEGORIES, OTHER_EXPENSE_PLATFORMS, mergeOptions } from "@/lib/constants"
 import { formatMoney } from "@/lib/format"
 import type { OtherExpense } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -90,6 +91,16 @@ export function OtherExpensesPage() {
     const back = list.filter((r) => r.amount < 0).reduce((acc, r) => acc + r.amount, 0)
     return { spend, back, net: spend + back, count: list.length }
   }, [rows])
+
+  // 候选 = 内置常用值 + 历史记录里真实用过的值，所以记过一次的类别 / 平台下次就能选到
+  const categoryOptions = useMemo(
+    () => mergeOptions(OTHER_EXPENSE_CATEGORIES, (rows ?? []).map((r) => r.category)),
+    [rows],
+  )
+  const platformOptions = useMemo(
+    () => mergeOptions(OTHER_EXPENSE_PLATFORMS, (rows ?? []).map((r) => r.platform)),
+    [rows],
+  )
 
   async function submit() {
     const value = Number(amount)
@@ -224,26 +235,35 @@ export function OtherExpensesPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="oe-category">费用类别</Label>
-              <Input
+              <OptionCombobox
                 id="oe-category"
-                placeholder="如 保证金 / 仓储费"
+                label="费用类别"
                 value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                onChange={setCategory}
+                options={categoryOptions}
+                placeholder="如 保证金 / 会员费"
               />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="oe-platform">平台（可选）</Label>
-              <Input
+              <OptionCombobox
                 id="oe-platform"
-                placeholder="如 得物"
+                label="平台"
                 value={platform}
-                onChange={(e) => setPlatform(e.target.value)}
+                onChange={setPlatform}
+                options={platformOptions}
+                placeholder="如 得物 / 唯品会"
               />
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <Label>常用类别</Label>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <Label>常用类别</Label>
+              <span className="text-muted-foreground text-xs">
+                点上面的输入框可展开全部候选，选不到就直接手写，写过的下次自动进候选
+              </span>
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {OTHER_EXPENSE_CATEGORIES.map((c) => (
                 <Button
@@ -261,7 +281,12 @@ export function OtherExpensesPage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label>常用平台</Label>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <Label>常用平台</Label>
+              <span className="text-muted-foreground text-xs">
+                得物、唯品会、淘宝、抖店… 候选里没有的也能直接手写
+              </span>
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {OTHER_EXPENSE_PLATFORMS.map((p) => (
                 <Button
