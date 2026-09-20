@@ -1,10 +1,14 @@
 # ---------- 依赖与构建产物（不要提交）----------
 app/node_modules/
 app/out/
+app/out-demo/
 app/dist/
 publish/
 deploy/
 screenshots/
+
+# 跑回归时脚本会自己生成的临时文件（vite 产物、临时测试脚本）
+**/.tmp-*
 
 # ---------- 系统 / 编辑器 ----------
 .DS_Store
