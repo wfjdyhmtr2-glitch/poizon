@@ -217,15 +217,13 @@ create table if not exists public.sales_orders (
   --   交易关闭成功                 → 买家在平台发货前退款
   --   交易成功 + 是否退货 = true   → 买家收到货后退款
   --   交易成功 + 是否退货 = false  → 正常成交
-  trade_stage     text generated always as (
-                    case
-                      when order_status = '交易失败'     then 'unpaid'
-                      when order_status = '交易关闭成功' then 'refund_before_ship'
-                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
-                      when order_status = '交易成功'     then 'completed'
+  trade_stage     text generated always as (case
+                      when order_status ~ '交易失败|未付款|待付款|已取消|付款失败|失败' then 'unpaid'
+                      when order_status ~ '关闭成功|交易关闭|已关闭|取消成功' then 'refund_before_ship'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' and is_returned then 'refund_after_receive'
+                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' then 'completed'
                       else 'unknown'
-                    end
-                  ) stored,
+                    end) stored,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -294,9 +292,11 @@ create or replace function public.order_stock_effect(
   p_status text, p_returned boolean, p_settled boolean
 ) returns text language sql immutable as $$
   select case
-    when p_status = '交易成功' and not coalesce(p_returned, false)
+    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
+         and not coalesce(p_returned, false)
          and coalesce(p_settled, false) then 'consumed'
-    when p_status = '交易成功' and not coalesce(p_returned, false) then 'locked'
+    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
+         and not coalesce(p_returned, false) then 'locked'
     else 'released'
   end;
 $$;

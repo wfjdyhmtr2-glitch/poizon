@@ -6,6 +6,35 @@
  *   订单结算成功               → 锁定释放，但不再退回可用（等于真扣减 1 个）
  * 订单通过 resolved_sku 关联商品：优先直接匹配 SPUID，否则查 SPU 对照表。
  */
+/**
+ * 订单状态的识别口径（前端 `sales.ts` 的 ACTIVE_ORDER_STATUS_PATTERN 保持同一套）。
+ *
+ * 得物后台导出的订单状态是平台原文（待卖家发货 / 待平台收货 / 已发货 …），
+ * 系统**原样保存**这些文本，所以交易阶段与库存联动不能只比对「交易成功」三个字，
+ * 必须按正则识别，否则中间态订单不占库存、盈亏也会漏算。
+ *
+ * 正则与前端 normalizeOrderStatus 的四个分支一一对应，**改一处必须改三处**
+ * （前端 sales.ts / 这里的生成列 / order_stock_effect）。
+ * scripts/unit-dewu.mjs 会自动比对两套实现，改错会直接跑挂测试。
+ */
+export const ORDER_ACTIVE_REGEX_SQL =
+  "交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓"
+export const ORDER_CLOSED_REGEX_SQL = "关闭成功|交易关闭|已关闭|取消成功"
+// 末尾的「失败」是前端的兜底写法（如「发货失败」），两边保持一致
+export const ORDER_FAILED_REGEX_SQL = "交易失败|未付款|待付款|已取消|付款失败|失败"
+
+/**
+ * 交易阶段生成列的定义（新库建表、老库重建都用这一段，避免两处口径漂移）。
+ * 生成列改定义只能 drop + add，老库由「得物原始状态兼容」那一步重建。
+ */
+const TRADE_STAGE_EXPR_SQL = `case
+                      when order_status ~ '${ORDER_FAILED_REGEX_SQL}' then 'unpaid'
+                      when order_status ~ '${ORDER_CLOSED_REGEX_SQL}' then 'refund_before_ship'
+                      when order_status ~ '${ORDER_ACTIVE_REGEX_SQL}' and is_returned then 'refund_after_receive'
+                      when order_status ~ '${ORDER_ACTIVE_REGEX_SQL}' then 'completed'
+                      else 'unknown'
+                    end`
+
 const STOCK_SYNC_SQL = `-- ---------- SPU 对照表（平台 spuID ↔ 本店 SPUID）----------
 create table if not exists public.spu_mappings (
   id          uuid primary key default gen_random_uuid(),
@@ -52,9 +81,11 @@ create or replace function public.order_stock_effect(
   p_status text, p_returned boolean, p_settled boolean
 ) returns text language sql immutable as $$
   select case
-    when p_status = '交易成功' and not coalesce(p_returned, false)
+    when coalesce(p_status, '') ~ '${ORDER_ACTIVE_REGEX_SQL}'
+         and not coalesce(p_returned, false)
          and coalesce(p_settled, false) then 'consumed'
-    when p_status = '交易成功' and not coalesce(p_returned, false) then 'locked'
+    when coalesce(p_status, '') ~ '${ORDER_ACTIVE_REGEX_SQL}'
+         and not coalesce(p_returned, false) then 'locked'
     else 'released'
   end;
 $$;
@@ -797,15 +828,7 @@ create table if not exists public.sales_orders (
   --   交易关闭成功                 → 买家在平台发货前退款
   --   交易成功 + 是否退货 = true   → 买家收到货后退款
   --   交易成功 + 是否退货 = false  → 正常成交
-  trade_stage     text generated always as (
-                    case
-                      when order_status = '交易失败'     then 'unpaid'
-                      when order_status = '交易关闭成功' then 'refund_before_ship'
-                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
-                      when order_status = '交易成功'     then 'completed'
-                      else 'unknown'
-                    end
-                  ) stored,
+  trade_stage     text generated always as (${TRADE_STAGE_EXPR_SQL}) stored,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -1151,15 +1174,7 @@ create table if not exists public.sales_orders (
   -- 履约方式等标记（寄售 / 现货、优先发货、换新、分享送礼…），仅作展示，不参与盈亏
   tag             text,
   paid_at         timestamptz,
-  trade_stage     text generated always as (
-                    case
-                      when order_status = '交易失败'     then 'unpaid'
-                      when order_status = '交易关闭成功' then 'refund_before_ship'
-                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
-                      when order_status = '交易成功'     then 'completed'
-                      else 'unknown'
-                    end
-                  ) stored,
+  trade_stage     text generated always as (${TRADE_STAGE_EXPR_SQL}) stored,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -1183,10 +1198,21 @@ create policy "sales_orders_authenticated_all" on public.sales_orders
 -- 3) 库存联动：让订单自动占用 / 返回 / 核销商品库存
 ${STOCK_SYNC_SQL}
 
--- 4) 访问控制：仅限管理员账号
+-- 4) 得物后台导出的订单状态兼容（老库必跑）
+--    得物导出的状态是平台原文（待卖家发货 / 待平台收货 …），系统原样保存这些文本；
+--    上面第 3 步的 order_stock_effect 已按正则识别，这里把老的 trade_stage 生成列
+--    一起重建，否则中间态订单的交易阶段会停在 unknown、统计里看不到。
+--    生成列无法直接改定义，只能 drop + add——数据会自动重算，不会丢。
+alter table public.sales_orders drop column if exists trade_stage;
+alter table public.sales_orders
+  add column trade_stage text generated always as (${TRADE_STAGE_EXPR_SQL}) stored;
+drop index if exists public.sales_orders_stage_idx;
+create index if not exists sales_orders_stage_idx on public.sales_orders (trade_stage);
+
+-- 5) 访问控制：仅限管理员账号
 ${ACCESS_CONTROL_SQL}
 
--- 5) 让 PostgREST 立刻感知新表与新字段
+-- 6) 让 PostgREST 立刻感知新表与新字段
 notify pgrst, 'reload schema';
 `
 

@@ -107,6 +107,9 @@ export function buildDewuOrderRow(raw: Record<string, unknown>, rowNo: number): 
     bid_amount: bid,
     expected_income: income,
     after_sales: text("关闭原因") || null,
+    // 标签：优先用系统模板里的「标签」列；得物原生导出没有这列，
+    // 退而用「订单类型」（品牌直发 / 入仓 …）当标记——只展示，不参与盈亏
+    tag: text("标签") || text("订单类型") || null,
     paid_at: paidAt,
   }
 
