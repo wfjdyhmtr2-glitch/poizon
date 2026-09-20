@@ -46,7 +46,7 @@ const PRODUCT_COLUMNS =
 
 /** trade_stage 是数据库生成列，只读不写 */
 const SALES_COLUMNS =
-  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,tag,paid_at,trade_stage,created_at,updated_at"
+  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,tag,paid_at,resolved_sku,trade_stage,created_at,updated_at"
 
 const SALES_SORT_MAP: Record<string, { column: string; ascending: boolean }> = {
   paid_desc: { column: "paid_at", ascending: false },
@@ -1001,7 +1001,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
     async listSpuInfo() {
       const { data, error } = await client()
         .from("spu_info")
-        .select("id,sku,name,image_url,price,updated_at")
+        .select("id,sku,name,image_url,price,goods_no,updated_at")
         .order("updated_at", { ascending: false })
       if (error) throw new BackendError(translateDbError(error.message))
       return (data ?? []).map((r) => {
@@ -1012,6 +1012,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
           name: String(row.name ?? ""),
           image_url: String(row.image_url ?? ""),
           price: nullableNumber(row.price),
+          goods_no: row.goods_no ? String(row.goods_no) : null,
           updated_at: String(row.updated_at ?? ""),
         }
       })
@@ -1025,6 +1026,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
         name: draft.name.trim(),
         image_url: draft.image_url ?? "",
         price: draft.price,
+        goods_no: draft.goods_no?.trim() || null,
         updated_at: new Date().toISOString(),
       }
       // RLS 自动限定在自己名下；按 (owner_id, sku) 先查后写，避免全局 upsert 冲突
@@ -1038,7 +1040,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
           .from("spu_info")
           .update(payload)
           .eq("id", String((existing as Record<string, unknown>).id))
-          .select("id,sku,name,image_url,price,updated_at")
+          .select("id,sku,name,image_url,price,goods_no,updated_at")
           .single()
         if (error) throw new BackendError(translateDbError(error.message))
         return data as unknown as SpuInfo
@@ -1046,7 +1048,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
       const { data, error } = await client()
         .from("spu_info")
         .insert(payload)
-        .select("id,sku,name,image_url,price,updated_at")
+        .select("id,sku,name,image_url,price,goods_no,updated_at")
         .single()
       if (error) throw new BackendError(translateDbError(error.message))
       return data as unknown as SpuInfo
@@ -1304,6 +1306,8 @@ function normalizeSales(row: Record<string, unknown>): SalesOrder {
     after_sales: (row.after_sales as string) ?? null,
     tag: (row.tag as string) ?? null,
     paid_at: (row.paid_at as string) ?? null,
+    // 数据库触发器算好的归属 SPUID（老库可能没这列，读不到就为 null）
+    resolved_sku: (row.resolved_sku as string) ?? null,
     // 生成列缺失时（老库）回退到前端推导，保证界面不崩
     trade_stage:
       (row.trade_stage as SalesOrder["trade_stage"]) ??

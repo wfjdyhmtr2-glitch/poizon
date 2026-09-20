@@ -160,6 +160,12 @@ export interface SalesOrder {
   tag: string | null
   /** 买家支付时间 */
   paid_at: string | null
+  /**
+   * 派生字段：订单里的平台货号解析出的**本店 SPUID**。
+   * 解析顺序：商品 sku 直接匹配 → SPU 对照表 → 「商品信息」里登记的货号；解析不到为 null。
+   * 云端由数据库触发器维护（resolved_sku 列），演示模式实时计算。
+   */
+  resolved_sku: string | null
   /** 派生字段，云端由数据库生成列计算 */
   trade_stage: TradeStage
   created_at: string
@@ -168,7 +174,7 @@ export interface SalesOrder {
 
 export type SalesOrderDraft = Omit<
   SalesOrder,
-  "id" | "created_at" | "updated_at" | "trade_stage"
+  "id" | "created_at" | "updated_at" | "trade_stage" | "resolved_sku"
 >
 
 export type SalesSortKey =
@@ -235,6 +241,12 @@ export interface SpuInfo {
   image_url: string
   /** 选填：商品售价（入仓建档时带入） */
   price: number | null
+  /**
+   * 选填：**平台货号**（如得物货号 TN002YR）。一个 SPU 对应一个货号。
+   * 订单归属解析会用它兜底（商品 sku → SPU 对照表 → 这里的货号），
+   * 所以填了货号，导进来的平台订单就能自动认到对应商品。
+   */
+  goods_no: string | null
   updated_at: string
 }
 

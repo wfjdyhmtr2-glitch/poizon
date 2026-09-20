@@ -77,15 +77,19 @@ function writeStore(rows: Product[]) {
 /* ---------------- 演示：销售订单存储 ---------------- */
 
 function readSalesStore(): SalesOrder[] {
+  const products = readStore()
+  const mappings = readMappingStore()
+  const withResolved = (rows: SalesOrder[]) =>
+    rows.map((r) => ({ ...r, resolved_sku: resolveOrderSku(products, mappings, r.sku) }))
   try {
     const raw = localStorage.getItem(SALES_KEY)
-    if (raw) return JSON.parse(raw) as SalesOrder[]
+    if (raw) return withResolved(JSON.parse(raw) as SalesOrder[])
   } catch {
     /* ignore */
   }
   const seeded = buildDemoSalesOrders(readStore())
   writeSalesStore(seeded)
-  return seeded
+  return withResolved(seeded)
 }
 
 function writeSalesStore(rows: SalesOrder[]) {
@@ -152,7 +156,10 @@ function writeImageStore(rows: ProductImage[]) {
 function readSpuInfoStore(): SpuInfo[] {
   try {
     const raw = localStorage.getItem(SPU_INFO_KEY)
-    if (raw) return JSON.parse(raw) as SpuInfo[]
+    if (raw) {
+      // 早期演示数据没有 goods_no 字段，读出来补齐，避免 undefined 漏到界面
+      return (JSON.parse(raw) as SpuInfo[]).map((r) => ({ ...r, goods_no: r.goods_no ?? null }))
+    }
     if (localStorage.getItem(SPU_INFO_SEEDED_KEY)) return []
   } catch {
     /* ignore */
@@ -164,6 +171,8 @@ function readSpuInfoStore(): SpuInfo[] {
     name: p.name,
     image_url: "",
     price: p.price,
+    // 演示用货号，方便看出「平台货号 → SPU」这条兜底链路
+    goods_no: `DW-${p.sku}`,
     updated_at: p.updated_at,
   }))
   try {
@@ -701,18 +710,25 @@ function applyPurchaseToProducts(
 }
 
 /** 演示模式下 trade_stage 由前端推导，与云端的数据库生成列保持一致 */
-function withStage(order: SalesOrder): SalesOrder {
-  return { ...order, trade_stage: computeTradeStage(order.order_status, order.is_returned) }
+function withStage(order: Omit<SalesOrder, "trade_stage" | "resolved_sku">): SalesOrder {
+  return {
+    ...order,
+    trade_stage: computeTradeStage(order.order_status, order.is_returned),
+    resolved_sku: resolveOrderSku(readStore(), readMappingStore(), order.sku),
+  }
 }
 
 /**
- * 订单里的 spuID → 商品 SPUID：先直接匹配，匹配不到再查 SPU 对照表。
+ * 订单里的 spuID → 商品 SPUID：先直接匹配 → SPU 对照表 → 「商品信息」里登记的平台货号。
  * 与云端数据库里的 resolve_order_sku() 行为保持一致。
  */
 function resolveOrderSku(products: Product[], mappings: SpuMapping[], sku: string): string | null {
   if (!sku) return null
   if (products.some((p) => p.sku === sku)) return sku
-  return mappings.find((m) => m.external_id === sku)?.sku ?? null
+  const mapped = mappings.find((m) => m.external_id === sku)
+  if (mapped) return mapped.sku
+  // 最后兜底：「商品信息」里登记的平台货号
+  return readSpuInfoStore().find((i) => i.goods_no === sku)?.sku ?? null
 }
 
 /**
@@ -917,7 +933,6 @@ export function createDemoBackend(): Backend {
       const order = withStage({
         ...draft,
         id: uid(),
-        trade_stage: "unknown",
         created_at: now,
         updated_at: now,
       })
@@ -1000,8 +1015,7 @@ export function createDemoBackend(): Backend {
           const order = withStage({
             ...d,
             id: uid(),
-            trade_stage: "unknown",
-            created_at: now,
+                created_at: now,
             updated_at: now,
           })
           rows.unshift(order)
@@ -1122,7 +1136,14 @@ export function createDemoBackend(): Backend {
       const now = new Date().toISOString()
       const idx = rows.findIndex((r) => r.sku === sku)
       if (idx >= 0) {
-        const next: SpuInfo = { ...rows[idx], name: draft.name.trim(), image_url: draft.image_url ?? "", price: draft.price, updated_at: now }
+        const next: SpuInfo = {
+          ...rows[idx],
+          name: draft.name.trim(),
+          image_url: draft.image_url ?? "",
+          price: draft.price,
+          goods_no: draft.goods_no?.trim() || null,
+          updated_at: now,
+        }
         rows[idx] = next
         writeSpuInfoStore(rows)
         return next
@@ -1133,6 +1154,7 @@ export function createDemoBackend(): Backend {
         name: draft.name.trim(),
         image_url: draft.image_url ?? "",
         price: draft.price,
+        goods_no: draft.goods_no?.trim() || null,
         updated_at: now,
       }
       writeSpuInfoStore([created, ...rows])

@@ -153,6 +153,7 @@ export function buildDemoSalesOrders(products: Product[]): SalesOrder[] {
       id: `demo-order-${String(i + 1).padStart(4, "0")}`,
       order_no: `DW${String(260900000 + i * 137).padStart(12, "0")}`,
       sku: product.sku,
+      resolved_sku: product.sku,
       spec,
       order_status: mix.status,
       is_returned: mix.returned,

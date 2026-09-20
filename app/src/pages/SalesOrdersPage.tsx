@@ -501,7 +501,8 @@ export function SalesOrdersPage() {
                 </TableHeader>
                 <TableBody>
                   {rows.map((o) => {
-                    const product = productBySku.get(o.sku)
+                    const ownedSku = o.resolved_sku ?? o.sku
+                    const product = productBySku.get(ownedSku)
                     const settled = TRADE_STAGE_META[o.trade_stage]?.countsAsIncome
                     const effect = orderStockEffect(o.order_status, o.is_returned, o.is_settled)
                     return (
@@ -517,10 +518,10 @@ export function SalesOrdersPage() {
                         <TableCell>
                           <div className="min-w-0">
                             <p className="line-clamp-1 text-sm font-medium">
-                              {product?.name ?? o.sku}
+                              {product?.name ?? ownedSku}
                             </p>
                             <p className="truncate font-mono text-xs text-muted-foreground">
-                              {o.sku}
+                              {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
                             </p>
                           </div>
                         </TableCell>
@@ -610,7 +611,8 @@ export function SalesOrdersPage() {
           {/* 移动端卡片 */}
           <div className="grid gap-3 md:hidden">
             {rows.map((o) => {
-              const product = productBySku.get(o.sku)
+              const ownedSku = o.resolved_sku ?? o.sku
+              const product = productBySku.get(ownedSku)
               const counts = TRADE_STAGE_META[o.trade_stage]?.countsAsIncome
               const effect = orderStockEffect(o.order_status, o.is_returned, o.is_settled)
               return (
@@ -622,10 +624,10 @@ export function SalesOrdersPage() {
                           {o.order_no}
                         </p>
                         <p className="mt-1 line-clamp-1 text-sm font-medium">
-                          {product?.name ?? o.sku}
+                          {product?.name ?? ownedSku}
                         </p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {o.sku}
+                          {ownedSku === o.sku ? o.sku : `${o.sku} → ${ownedSku}`}
                           {o.spec ? ` · ${o.spec}` : ""}
                         </p>
                       </div>

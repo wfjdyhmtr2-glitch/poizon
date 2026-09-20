@@ -1,14 +1,63 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ClipboardPaste, ImagePlus, ImageIcon, Loader2, Plus, Save, Star, Trash2 } from "lucide-react"
+import {
+  ClipboardPaste,
+  ImagePlus,
+  ImageIcon,
+  Loader2,
+  Plus,
+  Save,
+  Star,
+  Trash2,
+  Upload,
+} from "lucide-react"
 import { useApp } from "@/contexts/AppContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { EmptyState, PageHeader } from "@/components/common"
 import type { Product, ProductImage, PurchaseOrder, SpuInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+
+/** 导入表格里的列名映射（归一化后匹配：去空格、转小写） */
+const IMPORT_HEADER_MAP: { keys: string[]; field: "sku" | "name" | "goodsNo" }[] = [
+  { keys: ["spuid", "spu", "spuid(本店)", "本店spuid", "商品编号", "sku", "款号"], field: "sku" },
+  { keys: ["商品名称", "名称", "品名", "name", "title"], field: "name" },
+  { keys: ["货号", "平台货号", "得物货号", "外部货号", "goodsno", "goods_no", "outersku"], field: "goodsNo" },
+]
+
+interface ImportRow {
+  sku: string
+  name: string
+  goodsNo: string
+}
+
+function normalizeHeader(raw: string) {
+  return raw.replace(/\s|　/g, "").toLowerCase()
+}
+
+/** 把一行「表头→值」的对象按列名映射解析出来 */
+function mapImportRow(raw: Record<string, unknown>): ImportRow {
+  const out: ImportRow = { sku: "", name: "", goodsNo: "" }
+  for (const [header, value] of Object.entries(raw)) {
+    const key = normalizeHeader(header)
+    const hit = IMPORT_HEADER_MAP.find((m) => m.keys.some((k) => normalizeHeader(k) === key))
+    if (!hit) continue
+    const text = String(value ?? "").trim()
+    if (text && !out[hit.field]) out[hit.field] = text
+  }
+  return out
+}
 
 /** 登记表单里的一行颜色（color 为空 = 通用 / SPU 主图） */
 interface RegRow {
@@ -37,9 +86,11 @@ export function ImageLibraryPage() {
   const [filterSku, setFilterSku] = useState("all")
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  /* 登记表单：SPUID + 名称 + 颜色 + 图片（粘贴 / 选择） */
+  /* 登记表单：SPUID + 名称 + 货号 + 颜色 + 图片（粘贴 / 选择） */
   const [regSku, setRegSku] = useState("")
   const [regName, setRegName] = useState("")
+  /** 平台货号（如得物货号 TN002YR）：SPU 级、一个 SPU 一个、非必填。订单归属会用它兜底解析 */
+  const [regGoodsNo, setRegGoodsNo] = useState("")
   /** 颜色行：一个 SPUID 下可加多行，每行一个颜色各自贴图；color 为空 = 通用 */
   const [regRows, setRegRows] = useState<RegRow[]>(() => [newRow("")])
   /** 被勾选为默认主图的行 key（该行第一张图会写进 SPU 主图） */
@@ -48,6 +99,13 @@ export function ImageLibraryPage() {
   const [spuInfos, setSpuInfos] = useState<SpuInfo[]>([])
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([])
   const pasteTargetRef = useRef<string>("")
+
+  /* 批量导入商品信息（SPUID + 名称 + 货号） */
+  const [importOpen, setImportOpen] = useState(false)
+  const [importRows, setImportRows] = useState<ImportRow[]>([])
+  const [importIssue, setImportIssue] = useState("")
+  const [importing, setImporting] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -150,12 +208,14 @@ export function ImageLibraryPage() {
     return map
   }, [images, regSku])
 
-  /** 选中 SPUID 时自动带出名称，并按已有颜色初始化颜色行 */
+  /** 选中 SPUID 时自动带出名称与货号，并按已有颜色初始化颜色行 */
   function applyRegSku(sku: string) {
     setRegSku(sku)
     const trimmed = sku.trim()
     const info = infoBySku.get(trimmed)
     if (info) setRegName(info.name)
+    // 货号跟随 SPU：换到别的 SPUID 就换成它自己的货号（没登记过则为空）
+    setRegGoodsNo(info?.goods_no ?? "")
     const colors = (productBySku.get(trimmed)?.colors ?? []).filter(Boolean)
     const used = new Set(
       images.filter((img) => img.sku === trimmed && img.color).map((img) => img.color),
@@ -203,6 +263,7 @@ export function ImageLibraryPage() {
   function resetReg() {
     setRegRows([newRow("")])
     setDefaultRowKey("")
+    setRegGoodsNo("")
   }
 
   async function saveReg() {
@@ -254,6 +315,7 @@ export function ImageLibraryPage() {
         name: regName.trim(),
         image_url: imageUrl,
         price: null,
+        goods_no: regGoodsNo.trim() || null,
       })
 
       const total = regRows.reduce((acc, r) => acc + r.files.length, 0)
@@ -270,12 +332,136 @@ export function ImageLibraryPage() {
     }
   }
 
+  /* ------------------------- 批量导入（SPUID + 名称 + 货号）------------------------- */
+
+  /** 解析 .xlsx / .xls / .csv 文件 */
+  async function parseImportFile(file: File) {
+    try {
+      const XLSX = await import("xlsx")
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: "",
+        raw: false,
+      })
+      applyImportRows(json)
+    } catch (err) {
+      setImportRows([])
+      setImportIssue(`文件解析失败：${(err as Error).message}`)
+    }
+  }
+
+  /** 解析粘贴的文本（Tab 或逗号分隔，第一行是表头） */
+  function parseImportText(text: string) {
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trimEnd())
+      .filter((l) => l.trim())
+    if (lines.length < 2) {
+      setImportRows([])
+      setImportIssue("至少需要「表头 + 一行数据」")
+      return
+    }
+    const delim = lines[0].includes("\t") ? "\t" : ","
+    const headers = lines[0].split(delim).map((h) => h.trim().replace(/^"|"$/g, ""))
+    const rows = lines.slice(1).map((line) => {
+      const cells = line.split(delim).map((c) => c.trim().replace(/^"|"$/g, ""))
+      const obj: Record<string, unknown> = {}
+      headers.forEach((h, i) => {
+        obj[h] = cells[i] ?? ""
+      })
+      return obj
+    })
+    applyImportRows(rows)
+  }
+
+  /** 统一的校验 + 预览提示 */
+  function applyImportRows(raw: Record<string, unknown>[]) {
+    const parsed = raw.map(mapImportRow).filter((r) => r.sku || r.name || r.goodsNo)
+    const missing = parsed.filter((r) => !r.sku).length
+    setImportRows(parsed)
+    if (!parsed.length) {
+      setImportIssue("没读到数据：请确认第一行是表头，且至少有一列是 SPUID")
+    } else if (missing) {
+      setImportIssue(`共 ${parsed.length} 行，其中 ${missing} 行没填 SPUID（会被跳过）`)
+    } else {
+      setImportIssue(`共 ${parsed.length} 行，可以导入`)
+    }
+  }
+
+  async function runImport() {
+    const rows = importRows.filter((r) => r.sku.trim())
+    if (!rows.length) {
+      toast.error("没有可导入的行")
+      return
+    }
+    setImporting(true)
+    let ok = 0
+    const failed: string[] = []
+    try {
+      for (const row of rows) {
+        const sku = row.sku.trim()
+        const existing = infoBySku.get(sku)
+        try {
+          await backend.upsertSpuInfo({
+            sku,
+            // 表里没提供的字段保留原值，避免导入把已有名称 / 主图清空
+            name: row.name || existing?.name || "",
+            image_url: existing?.image_url ?? "",
+            price: existing?.price ?? null,
+            goods_no: row.goodsNo || existing?.goods_no || null,
+          })
+          ok += 1
+        } catch (err) {
+          failed.push(`${sku}（${(err as Error).message}）`)
+        }
+      }
+      if (failed.length) {
+        toast.error(`成功 ${ok} 条，失败 ${failed.length} 条：${failed.slice(0, 3).join("；")}`)
+      } else {
+        toast.success(`已导入 ${ok} 个 SPUID 的商品信息`)
+      }
+      setImportOpen(false)
+      setImportRows([])
+      setImportIssue("")
+      if (importFileRef.current) importFileRef.current.value = ""
+      bumpData()
+      await load()
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  /** 下载一个空白模板，省得对着说明猜列名 */
+  async function downloadTemplate() {
+    const XLSX = await import("xlsx")
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["SPUID", "商品名称", "货号"],
+      ["TN002YR-A", "示例：羽绒服 森林绿", "TN002YR"],
+    ])
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, sheet, "商品信息")
+    const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" }) as ArrayBuffer
+    const url = URL.createObjectURL(new Blob([buffer]))
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "商品信息导入模板.xlsx"
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="商品信息"
-        description="每个 SPUID 登记名称，并按颜色分行贴图（支持粘贴）。未手动指定时，自动取第一张录入的图片作为默认主图。入仓管理输入 SPUID 会自动带出名称。"
+        description="每个 SPUID 登记名称、货号（非必填，一个 SPU 对应一个）与图片（按颜色分行贴，支持粘贴）。填了货号，导入的平台订单就能自动认到对应商品。"
+        actions={
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            <Upload className="size-4" />
+            批量导入
+          </Button>
+        }
       />
 
       {/* SPUID 登记 + 按颜色挂图（合一） */}
@@ -290,7 +476,7 @@ export function ImageLibraryPage() {
           </div>
 
           {/* 基础信息 */}
-          <div className="grid gap-3 sm:grid-cols-[200px_1fr]">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[190px_1fr_190px]">
             <div className="space-y-1.5">
               <Label htmlFor="reg-sku">SPUID</Label>
               <Input
@@ -315,6 +501,22 @@ export function ImageLibraryPage() {
                 placeholder="该 SPUID 对应的商品名称"
                 onChange={(e) => setRegName(e.target.value)}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="reg-goods-no">
+                货号
+                <span className="ml-1 text-[11px] font-normal text-muted-foreground">非必填</span>
+              </Label>
+              <Input
+                id="reg-goods-no"
+                value={regGoodsNo}
+                placeholder="如 TN002YR"
+                className="font-mono"
+                onChange={(e) => setRegGoodsNo(e.target.value)}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                平台货号（得物货号）。填了之后，订单里的这个货号会自动认到本 SPU
+              </p>
             </div>
           </div>
 
@@ -505,6 +707,11 @@ export function ImageLibraryPage() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{r.name || "（未填名称）"}</p>
                     <p className="truncate font-mono text-[11px] text-muted-foreground">{r.sku}</p>
+                    {r.goods_no ? (
+                      <p className="truncate font-mono text-[11px] text-muted-foreground">
+                        货号 {r.goods_no}
+                      </p>
+                    ) : null}
                     <p className="text-[11px] text-muted-foreground">
                       售价 {avgPriceBySku.get(r.sku) ?? "-"}
                     </p>
@@ -598,6 +805,108 @@ export function ImageLibraryPage() {
           ))}
         </div>
       )}
+
+      {/* 批量导入 SPUID / 名称 / 货号 */}
+      <Dialog open={importOpen} onOpenChange={(open) => !importing && setImportOpen(open)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>批量导入商品信息</DialogTitle>
+            <DialogDescription>
+              需要的列：<strong>SPUID</strong>，以及「商品名称」「货号」（后两列可留空，货号一个 SPU
+              对应一个）。表头写得不一样也能认（「商品编号」「款号」「平台货号」都行）。
+              同一个 SPUID 重复导入是<strong>更新</strong>，且表里没填的字段会保留原值。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={importing}
+                onClick={() => importFileRef.current?.click()}
+              >
+                <Upload className="size-3.5" />
+                选择文件
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={importing}
+                onClick={() => void downloadTemplate()}
+              >
+                下载模板
+              </Button>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) void parseImportFile(file)
+                }}
+              />
+              <span className="text-xs text-muted-foreground">
+                或直接从 Excel 复制，粘贴到下面的框里
+              </span>
+            </div>
+
+            <Textarea
+              id="spu-import-text"
+              className="h-24 font-mono text-xs"
+              placeholder={"SPUID\t商品名称\t货号\nTN002YR-A\t羽绒服 森林绿\tTN002YR"}
+              disabled={importing}
+              onChange={(e) => parseImportText(e.target.value)}
+            />
+
+            {importIssue ? <p className="text-xs text-muted-foreground">{importIssue}</p> : null}
+
+            {importRows.length ? (
+              <div className="max-h-56 overflow-auto rounded-lg border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left font-medium">SPUID</th>
+                      <th className="px-2 py-1.5 text-left font-medium">商品名称</th>
+                      <th className="px-2 py-1.5 text-left font-medium">货号</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importRows.slice(0, 50).map((row, index) => (
+                      <tr key={`${row.sku}-${index}`} className="border-t">
+                        <td className="px-2 py-1.5 font-mono">
+                          {row.sku || <span className="text-destructive">（缺）</span>}
+                        </td>
+                        <td className="px-2 py-1.5">{row.name}</td>
+                        <td className="px-2 py-1.5 font-mono">{row.goodsNo}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {importRows.length > 50 ? (
+                  <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                    …… 仅预览前 50 行，导入时会全部处理
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" disabled={importing} onClick={() => setImportOpen(false)}>
+              取消
+            </Button>
+            <Button
+              disabled={importing || !importRows.some((r) => r.sku.trim())}
+              onClick={() => void runImport()}
+            >
+              {importing ? <Loader2 className="size-4 animate-spin" /> : null}
+              导入 {importRows.filter((r) => r.sku.trim()).length} 条
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

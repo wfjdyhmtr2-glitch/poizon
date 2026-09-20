@@ -289,6 +289,21 @@ async function main() {
     await sleep(200)
   }
 
+  /** textarea 的受控/非受控值替换（普通 input setter 对 textarea 无效） */
+  async function setTextarea(selector, text) {
+    const ok = await evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const proto = window.HTMLTextAreaElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+      setter.call(el, ${JSON.stringify(text)});
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(200)
+    return ok
+  }
+
   /** 直接替换受控 input 的值：React 需要原生 setter + input 事件才会同步 state */
   async function setInput(selector, text) {
     const ok = await evaluate(`(() => {
@@ -523,6 +538,35 @@ async function main() {
   console.log("  演示种子图已生成:", imagesText.includes("通用") || /白色|黑色|米色/.test(imagesText))
   console.log("  默认主图规则已更新:", imagesText.includes("自动取第一张录入的图"))
   await shot("08b-images-desktop")
+
+  console.log("\n=== 8b2. 商品信息：货号登记 + 批量导入 ===")
+  const smokeSku = "SMOKE-SPU-01"
+  const smokeGoodsNo = "SMOKE-GOODS-01"
+  await setInput("#reg-sku", smokeSku)
+  await sleep(500)
+  await setInput("#reg-name", "冒烟测试商品")
+  await setInput("#reg-goods-no", smokeGoodsNo)
+  await sleep(300)
+  console.log(
+    "  货号可键盘输入:",
+    (await evaluate("document.querySelector('#reg-goods-no').value")) === smokeGoodsNo,
+  )
+  console.log("  点保存:", await clickByText("保存"))
+  await sleep(2600)
+  console.log("  已登记列表显示货号:", (await bodyText()).includes(smokeGoodsNo))
+
+  console.log("  — 批量导入 —")
+  console.log("  打开导入弹窗:", await clickByText("批量导入"))
+  await sleep(1000)
+  const spuImportText = "SPUID\t商品名称\t货号\nSMOKE-IMPORT-01\t导入测试商品\tSMOKE-IMPORT-GOODS"
+  console.log("  粘贴解析:", await setTextarea("#spu-import-text", spuImportText))
+  await sleep(1300)
+  console.log("  预览出现新行:", (await bodyText()).includes("SMOKE-IMPORT-01"))
+  console.log("  执行导入:", await clickByText("导入 1 条"))
+  await sleep(3000)
+  console.log("  导入成功:", (await bodyText()).includes("SMOKE-IMPORT-GOODS"))
+  await dismissToasts()
+  await shot("08b2-images-goods-import")
 
   console.log("\n=== 8c. 入仓管理（采购单维度 + 时间筛选）===")
   await goto(`${BASE}/#/purchases`, 2200)
@@ -901,6 +945,28 @@ async function main() {
   await goto(`${BASE}/#/sales/orders`, 2200)
   await setInputValue('input[placeholder^="搜索订单号"]', manualNo)
   console.log("  手动订单已落库:", (await bodyText()).includes(manualNo))
+
+  console.log("\n=== 13b. 订单按「平台货号」自动认出本店 SPUID ===")
+  const goodsNoOrder = `DW-GOODSNO-${String(Date.now()).slice(-6)}`
+  await clickByText("手动新增")
+  await sleep(700)
+  await setInputValue("#order-no", goodsNoOrder)
+  // 关键：这里填的是**平台货号**（在商品信息里登记过），不是本店 SPUID
+  await setInputValue("#order-sku", smokeGoodsNo)
+  await typeInto("#order-bid", "168")
+  await typeInto("#order-income", "150")
+  console.log("  点创建订单:", await clickByText("创建订单"))
+  await sleep(2600)
+  await goto(`${BASE}/#/sales/orders`, 2400)
+  await setInputValue('input[placeholder^="搜索订单号"]', goodsNoOrder)
+  await sleep(1600)
+  const goodsNoText = await bodyText()
+  console.log("  订单已落库:", goodsNoText.includes(goodsNoOrder))
+  console.log(
+    "  货号已被认成本店 SPUID:",
+    goodsNoText.includes(`${smokeGoodsNo} → ${smokeSku}`),
+  )
+  await shot("17b-sales-order-goods-no")
 
   console.log("\n=== 14. 库存联动：锁定 → 核销 → 删除退回 ===")
   const SKU = "SH-2001"

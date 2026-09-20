@@ -70,9 +70,12 @@ returns text language sql stable as $$
       select 1 from public.products pr
       where pr.sku = p_sku
     ) then p_sku
-    else (
-      select m.sku from public.spu_mappings m
-      where m.external_id = p_sku limit 1
+    -- 顺序兜底：先查「SPU 对照表」，再查「商品信息」里登记的平台货号
+    else coalesce(
+      (select m.sku from public.spu_mappings m
+        where m.external_id = p_sku limit 1),
+      (select i.sku from public.spu_info i
+        where i.goods_no = p_sku limit 1)
     )
   end;
 $$;
@@ -194,6 +197,27 @@ drop trigger if exists spu_mappings_refresh_stock on public.spu_mappings;
 create trigger spu_mappings_refresh_stock
   after insert or update or delete on public.spu_mappings
   for each row execute function public.refresh_orders_for_external_mapping();
+
+-- 「商品信息」里登记的货号变了 → 同样让受影响订单重新解析（货号也是订单归属的依据之一）
+create or replace function public.refresh_orders_for_goods_no()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    perform public.refresh_orders_for_external(old.goods_no);
+  elsif tg_op = 'UPDATE' and old.goods_no is distinct from new.goods_no then
+    perform public.refresh_orders_for_external(old.goods_no);
+    perform public.refresh_orders_for_external(new.goods_no);
+  else
+    perform public.refresh_orders_for_external(new.goods_no);
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists spu_info_refresh_orders on public.spu_info;
+create trigger spu_info_refresh_orders
+  after insert or update or delete on public.spu_info
+  for each row execute function public.refresh_orders_for_goods_no();
 
 -- 新建 / 改名的商品可能让之前「解析不到」的订单突然匹配上
 create or replace function public.refresh_orders_for_product()
@@ -626,6 +650,9 @@ create table if not exists public.spu_info (
   name       text not null default '',
   image_url  text not null default '',
   price      numeric(12,2),
+  -- 平台货号（如得物货号 TN002YR）：一个 SPU 对应一个货号，非必填。
+  -- 订单归属按「商品 sku → SPU 对照表 → 这里的货号」顺序解析（见 resolve_order_sku）。
+  goods_no   text,
   updated_at timestamptz not null default now()
 );
 
@@ -638,6 +665,9 @@ alter table if exists public.product_images        add column if not exists owne
 alter table if exists public.purchase_orders       add column if not exists owner_id uuid;
 alter table if exists public.purchase_order_items  add column if not exists owner_id uuid;
 alter table if exists public.spu_info               add column if not exists owner_id uuid;
+-- 老库的 spu_info 已存在（create table if not exists 会跳过），货号列必须在这里补上：
+-- 后面的 resolve_order_sku 函数体引用它，缺列会让函数创建失败
+alter table if exists public.spu_info               add column if not exists goods_no text;
 alter table if exists public.other_expenses         add column if not exists owner_id uuid;
 
 -- ---------- 其他费用（平台层面的支出，不绑定商品）----------
@@ -915,6 +945,9 @@ create table if not exists public.spu_info (
   name       text not null default '',
   image_url  text not null default '',
   price      numeric(12,2),
+  -- 平台货号（如得物货号 TN002YR）：一个 SPU 对应一个货号，非必填。
+  -- 订单归属按「商品 sku → SPU 对照表 → 这里的货号」顺序解析（见 resolve_order_sku）。
+  goods_no   text,
   updated_at timestamptz not null default now()
 );
 
@@ -973,6 +1006,9 @@ create table if not exists public.spu_info (
   name       text not null default '',
   image_url  text not null default '',
   price      numeric(12,2),
+  -- 平台货号（如得物货号 TN002YR）：一个 SPU 对应一个货号，非必填。
+  -- 订单归属按「商品 sku → SPU 对照表 → 这里的货号」顺序解析（见 resolve_order_sku）。
+  goods_no   text,
   updated_at timestamptz not null default now()
 );
 
@@ -985,6 +1021,9 @@ alter table if exists public.product_images        add column if not exists owne
 alter table if exists public.purchase_orders       add column if not exists owner_id uuid;
 alter table if exists public.purchase_order_items  add column if not exists owner_id uuid;
 alter table if exists public.spu_info               add column if not exists owner_id uuid;
+-- 老库的 spu_info 已存在（create table if not exists 会跳过），货号列必须在这里补上：
+-- 后面的 resolve_order_sku 函数体引用它，缺列会让函数创建失败
+alter table if exists public.spu_info               add column if not exists goods_no text;
 alter table if exists public.other_expenses         add column if not exists owner_id uuid;
 
 -- ---------- 其他费用（平台层面的支出，不绑定商品）----------
