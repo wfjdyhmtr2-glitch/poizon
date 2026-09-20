@@ -494,6 +494,7 @@ export function SalesOrdersPage() {
                     <TableHead className="w-[96px]">出价</TableHead>
                     <TableHead className="w-[104px]">预计收入</TableHead>
                     <TableHead className="w-[84px]">结算</TableHead>
+                    <TableHead className="w-[140px]">标签</TableHead>
                     <TableHead className="w-[150px]">支付时间</TableHead>
                     <TableHead className="w-[64px] text-right">操作</TableHead>
                   </TableRow>
@@ -559,6 +560,15 @@ export function SalesOrdersPage() {
                             <Badge variant="outline" className="font-normal text-muted-foreground">
                               未结算
                             </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {o.tag ? (
+                            <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
+                              {o.tag}
+                            </span>
+                          ) : (
+                            "—"
                           )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -635,6 +645,11 @@ export function SalesOrdersPage() {
                       {o.after_sales ? (
                         <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                           {o.after_sales}
+                        </span>
+                      ) : null}
+                      {o.tag ? (
+                        <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                          {o.tag}
                         </span>
                       ) : null}
                       {o.is_settled ? (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Crown, KeyRound, RefreshCcw, ShieldAlert, Trash2, UserPlus, Users } from "lucide-react"
+import { Crown, KeyRound, Lock, RefreshCcw, ShieldAlert, Trash2, UserPlus, Users } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,7 +26,16 @@ import { ConfirmDialog, ErrorBlock, LoadingBlock, PageHeader } from "@/component
 import { useApp } from "@/contexts/AppContext"
 import { SUPER_ADMIN_EMAIL } from "@/lib/constants"
 import { formatDate } from "@/lib/format"
-import type { AppMember, MemberRole } from "@/lib/types"
+import {
+  PERMISSION_LEVELS,
+  PERMISSION_MODULES,
+  permOf,
+  type AppMember,
+  type MemberPermissions,
+  type MemberRole,
+  type ModuleId,
+  type PermissionLevel,
+} from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 function isSuperAdmin(email: string) {
@@ -45,6 +54,20 @@ function RoleBadge({ role }: { role: MemberRole }) {
   return <Badge variant="secondary">成员</Badge>
 }
 
+/** 成员列表里的一行摘要：管理员不受勾选限制，其他人显示「几个可看 / 几个可改」 */
+function describePermissions(member: AppMember) {
+  if (member.role === "admin") return "不受限制"
+  let view = 0
+  let edit = 0
+  for (const mod of PERMISSION_MODULES) {
+    const level = permOf(member.permissions, mod.id)
+    if (level !== "none") view++
+    if (level === "edit") edit++
+  }
+  if (!view) return "未开通（看不到任何模块）"
+  return `${view} 个可查看 · ${edit} 个可编辑`
+}
+
 export function TeamPage() {
   const { backend, isCloud, dataVersion, bumpData, user, isAdmin } = useApp()
 
@@ -61,6 +84,7 @@ export function TeamPage() {
 
   const [pwTarget, setPwTarget] = useState<AppMember | null>(null)
   const [pwValue, setPwValue] = useState("")
+  const [permTarget, setPermTarget] = useState<AppMember | null>(null)
   const [removeTarget, setRemoveTarget] = useState<AppMember | null>(null)
 
   const load = useCallback(async () => {
@@ -100,18 +124,20 @@ export function TeamPage() {
     setSaving(true)
     setFormError(null)
     try {
-      await backend.createMember({
+      const created = await backend.createMember({
         email: trimmed,
         password,
         role,
         display_name: displayName.trim() || null,
       })
-      toast.success(`已创建账号 ${trimmed}`)
+      toast.success(`已创建账号 ${trimmed}，接着给他勾选模块权限`)
       setEmail("")
       setPassword("")
       setDisplayName("")
       setRole("member")
       bumpData()
+      // 新账号默认**什么都看不到**（权限为空），所以建完直接弹权限设置引导勾选
+      setPermTarget(created)
     } catch (err) {
       setFormError((err as Error).message)
     } finally {
@@ -300,8 +326,9 @@ export function TeamPage() {
                   <TableHead className="min-w-[220px]">邮箱</TableHead>
                   <TableHead className="w-[140px]">姓名 / 备注</TableHead>
                   <TableHead className="w-[110px]">角色</TableHead>
+                  <TableHead className="w-[180px]">模块权限</TableHead>
                   <TableHead className="w-[120px]">加入时间</TableHead>
-                  <TableHead className="w-[280px]">操作</TableHead>
+                  <TableHead className="w-[320px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -324,6 +351,9 @@ export function TeamPage() {
                         <RoleBadge role={member.role} />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
+                        {describePermissions(member)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
                         {formatDate(member.created_at)}
                       </TableCell>
                       <TableCell>
@@ -338,6 +368,15 @@ export function TeamPage() {
                             }
                           >
                             {member.role === "admin" ? "降为成员" : "设为管理员"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setPermTarget(member)}
+                          >
+                            <Lock className="size-3" />
+                            模块权限
                           </Button>
                           <Button
                             variant="outline"
@@ -372,6 +411,15 @@ export function TeamPage() {
           </div>
         </CardContent>
       </Card>
+
+      <PermissionDialog
+        member={permTarget}
+        onClose={() => setPermTarget(null)}
+        onSaved={() => {
+          bumpData()
+          void load()
+        }}
+      />
 
       <Dialog open={Boolean(pwTarget)} onOpenChange={(open) => !open && setPwTarget(null)}>
         <DialogContent>
@@ -408,5 +456,135 @@ export function TeamPage() {
         onConfirm={doRemove}
       />
     </div>
+  )
+}
+
+/**
+ * 模块权限设置：11 个模块 × 三档（不可查看 / 仅查看 / 查看和编辑）。
+ * 点「保存权限」才写库；直接关掉对话框不改任何东西。
+ */
+function PermissionDialog({
+  member,
+  onClose,
+  onSaved,
+}: {
+  member: AppMember | null
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { backend } = useApp()
+  const [draft, setDraft] = useState<MemberPermissions>({})
+  const [saving, setSaving] = useState(false)
+
+  // 每次换人或重新打开，都用他当前的权限初始化草稿
+  useEffect(() => {
+    setDraft(member?.permissions ?? {})
+  }, [member])
+
+  // 按导航分组呈现，顺序与左侧菜单一致
+  const groups = useMemo(() => {
+    const out: { label: string; modules: (typeof PERMISSION_MODULES)[number][] }[] = []
+    for (const mod of PERMISSION_MODULES) {
+      const last = out[out.length - 1]
+      if (last && last.label === mod.group) last.modules.push(mod)
+      else out.push({ label: mod.group, modules: [mod] })
+    }
+    return out
+  }, [])
+
+  function setLevel(id: ModuleId, level: PermissionLevel) {
+    setDraft((prev) => {
+      const next = { ...prev }
+      if (level === "none") delete next[id]
+      else next[id] = level
+      return next
+    })
+  }
+
+  async function save() {
+    if (!member) return
+    setSaving(true)
+    try {
+      await backend.setMemberPermissions(member.id, draft)
+      toast.success(`已更新 ${member.email} 的权限`)
+      onSaved()
+      onClose()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(member)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>设置模块权限</DialogTitle>
+          <DialogDescription>
+            {member?.email} —— 每个模块三档：不可查看 / 仅查看 / 查看和编辑。
+            留「不可查看」就等于没开通这个模块（左侧不显示，数据库层面也读不到数据）。
+          </DialogDescription>
+        </DialogHeader>
+
+        {member?.role === "admin" ? (
+          <p className="rounded-md bg-muted/60 px-3 py-2 text-sm text-muted-foreground">
+            这个账号是<strong>管理员</strong>，所有模块都不受限制，勾选不生效。
+            想让他受权限约束，先在列表里取消管理员身份。
+          </p>
+        ) : null}
+
+        <div className="space-y-5">
+          {groups.map((group) => (
+            <div key={group.label} className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {group.label}
+              </p>
+              <div className="space-y-1.5">
+                {group.modules.map((mod) => {
+                  const level = permOf(draft, mod.id)
+                  return (
+                    <div
+                      key={mod.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2"
+                    >
+                      <span className="text-sm font-medium">{mod.label}</span>
+                      <div className="flex gap-1">
+                        {PERMISSION_LEVELS.map((opt) => (
+                          <Button
+                            key={opt.value}
+                            type="button"
+                            size="sm"
+                            variant={level === opt.value ? "default" : "outline"}
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setLevel(mod.id, opt.value)}
+                          >
+                            {opt.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          「商品导入」会写入商品数据，要让某个人用导入功能，建议同时给他「商品管理」的编辑权。
+          删除操作始终只有管理员能做。
+        </p>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button onClick={() => void save()} disabled={saving}>
+            {saving ? "保存中…" : "保存权限"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -38,6 +38,18 @@ import { toast } from "sonner"
 /** 常见售后类型，可自由输入 */
 const AFTER_SALES_PRESETS = ["无", "仅退款", "退货退款", "换货", "平台介入"]
 
+/** 履约标签预设：取自得物后台实际出现的组合，仅作标记，不参与财务口径 */
+const TAG_PRESETS = [
+  "寄售",
+  "优先发货寄售",
+  "普通现货",
+  "普通现货提前售",
+  "优先发货普通现货提前售",
+  "寄售分享送礼",
+  "优先发货寄售换新",
+  "优先发货寄售安心购新单",
+]
+
 export function SalesOrderFormDialog({
   open,
   onOpenChange,
@@ -124,6 +136,7 @@ export function SalesOrderFormDialog({
           sku: draft.sku.trim(),
           spec: draft.spec?.trim() || null,
           after_sales: draft.after_sales?.trim() || null,
+          tag: draft.tag?.trim() || null,
         },
         order?.id ?? null,
       )
@@ -272,6 +285,23 @@ export function SalesOrderFormDialog({
                 <option key={v} value={v} />
               ))}
             </datalist>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="order-tag">标签</Label>
+            <Input
+              id="order-tag"
+              list="order-tag-options"
+              value={draft.tag ?? ""}
+              placeholder="履约方式等标记，如「寄售」「优先发货寄售」"
+              onChange={(e) => patch({ tag: e.target.value })}
+            />
+            <datalist id="order-tag-options">
+              {TAG_PRESETS.map((v) => (
+                <option key={v} value={v} />
+              ))}
+            </datalist>
+            <p className="text-xs text-muted-foreground">只作标记与筛选参考，不参与盈亏计算。</p>
           </div>
 
           <div className="space-y-2">

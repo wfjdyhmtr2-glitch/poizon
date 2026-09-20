@@ -12,7 +12,8 @@ import { createCloudBackend } from "@/lib/cloudBackend"
 import { createDemoBackend } from "@/lib/demoBackend"
 import { clearCloudConfig, loadCloudConfig, saveCloudConfig } from "@/lib/cloud"
 import { SUPER_ADMIN_EMAIL } from "@/lib/constants"
-import type { AppMember, CloudConfig } from "@/lib/types"
+import type { AppMember, CloudConfig, MemberPermissions, ModuleId } from "@/lib/types"
+import { canEditModule, canViewModule } from "@/lib/types"
 
 interface AppContextValue {
   config: CloudConfig | null
@@ -25,7 +26,15 @@ interface AppContextValue {
   dataVersion: number
   /** 当前账号的成员档案（含角色）；不在白名单里为 null */
   membership: AppMember | null
-  /** 管理员：可管理账号、可删除业务数据；普通成员只能查看与录入 */
+  /** 当前账号的模块权限表（空对象 = 什么都不能看；管理员不受此限制） */
+  permissions: MemberPermissions
+  /** 成员档案是否已读取过：false 时权限判定应显示「加载中」而不是「没权限」 */
+  membershipLoaded: boolean
+  /** 能否查看某模块（管理员恒 true）。决定导航项是否显示、页面能否打开 */
+  canView: (module: ModuleId) => boolean
+  /** 能否编辑某模块（管理员恒 true）。决定新增/编辑/导入入口是否出现；删除另有 isAdmin 控制 */
+  canEdit: (module: ModuleId) => boolean
+  /** 管理员：可管理账号、可删除业务数据 */
   isAdmin: boolean
   refreshMembership: () => Promise<void>
   applyCloudConfig: (config: CloudConfig) => void
@@ -47,6 +56,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [healthLoading, setHealthLoading] = useState(false)
   const [dataVersion, setDataVersion] = useState(0)
   const [membership, setMembership] = useState<AppMember | null>(null)
+  /** 成员档案是否已尝试读取过（区分「还没拿到」和「真的没权限」） */
+  const [membershipLoaded, setMembershipLoaded] = useState(false)
 
   const backend = useMemo<Backend>(
     () => (config ? createCloudBackend(config) : createDemoBackend()),
@@ -108,12 +119,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshMembership = useCallback(async () => {
     if (!user) {
       setMembership(null)
+      setMembershipLoaded(true)
       return
     }
     try {
       setMembership(await backend.getMyMembership())
     } catch {
       setMembership(null)
+    } finally {
+      // 标记「读过了」：否则权限判定会把「还在加载」误当成「没权限」
+      setMembershipLoaded(true)
     }
   }, [backend, user])
 
@@ -124,6 +139,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const isAdmin =
     membership?.role === "admin" ||
     (user?.email ?? "").toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
+
+  // membership 每次刷新都是新对象，这里收敛成稳定引用，
+  // 否则 canView / canEdit 每帧都会重建，把用到它们的组件全部带着重渲染。
+  const permissions = useMemo<MemberPermissions>(
+    () => membership?.permissions ?? {},
+    [membership],
+  )
+
+  const canView = useCallback(
+    (module: ModuleId) => canViewModule(permissions, module, isAdmin),
+    [permissions, isAdmin],
+  )
+
+  const canEdit = useCallback(
+    (module: ModuleId) => canEditModule(permissions, module, isAdmin),
+    [permissions, isAdmin],
+  )
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -136,6 +168,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       healthLoading,
       dataVersion,
       membership,
+      membershipLoaded,
+      permissions,
+      canView,
+      canEdit,
       isAdmin,
       refreshMembership,
       applyCloudConfig(next: CloudConfig) {
@@ -168,7 +204,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setUser(null)
       },
     }),
-    [backend, config, dataVersion, health, healthLoading, isAdmin, membership, refreshHealth, refreshMembership, user],
+    [backend, canEdit, canView, config, dataVersion, health, healthLoading, isAdmin, membership, membershipLoaded, permissions, refreshHealth, refreshMembership, user],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

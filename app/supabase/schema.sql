@@ -209,19 +209,23 @@ create table if not exists public.sales_orders (
   bid_amount      numeric(12,2),
   expected_income numeric(12,2),
   after_sales     text,
+  -- 履约方式等标记（寄售 / 现货、优先发货、换新、分享送礼…），仅作展示，不参与盈亏
+  tag             text,
   paid_at         timestamptz,
   -- 交易阶段由「订单状态 + 是否退货」派生，规则固化在数据库里：
   --   交易失败                     → 买家未付款
   --   交易关闭成功                 → 买家在平台发货前退款
   --   交易成功 + 是否退货 = true   → 买家收到货后退款
   --   交易成功 + 是否退货 = false  → 正常成交
-  trade_stage     text generated always as (case
-                      when order_status ~ '交易失败|未付款|待付款|已取消|付款失败|失败' then 'unpaid'
-                      when order_status ~ '关闭成功|交易关闭|已关闭|取消成功' then 'refund_before_ship'
-                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' and is_returned then 'refund_after_receive'
-                      when order_status ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓' then 'completed'
+  trade_stage     text generated always as (
+                    case
+                      when order_status = '交易失败'     then 'unpaid'
+                      when order_status = '交易关闭成功' then 'refund_before_ship'
+                      when order_status = '交易成功' and is_returned then 'refund_after_receive'
+                      when order_status = '交易成功'     then 'completed'
                       else 'unknown'
-                    end) stored,
+                    end
+                  ) stored,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -290,11 +294,9 @@ create or replace function public.order_stock_effect(
   p_status text, p_returned boolean, p_settled boolean
 ) returns text language sql immutable as $$
   select case
-    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
-         and not coalesce(p_returned, false)
+    when p_status = '交易成功' and not coalesce(p_returned, false)
          and coalesce(p_settled, false) then 'consumed'
-    when coalesce(p_status, '') ~ '交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓'
-         and not coalesce(p_returned, false) then 'locked'
+    when p_status = '交易成功' and not coalesce(p_returned, false) then 'locked'
     else 'released'
   end;
 $$;
@@ -537,10 +539,16 @@ create table if not exists public.app_members (
   email        text not null default '',
   role         text not null default 'member',
   display_name text,
+  -- 模块级权限：{ "<moduleId>": "view" | "edit" }，缺省即「不可查看」。
+  -- 默认是空对象 → 升级后老成员**默认什么都看不到**，由管理员逐个勾选。
+  permissions  jsonb not null default '{}'::jsonb,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   constraint app_members_role_check check (role in ('admin', 'member'))
 );
+
+-- 老库升级：补列。必须排在任何「读 permissions 的函数 / 策略」之前，否则报 42703。
+alter table public.app_members add column if not exists permissions jsonb not null default '{}'::jsonb;
 
 create index if not exists app_members_email_idx on public.app_members (lower(email));
 
@@ -588,6 +596,49 @@ as $$
          )
 $$;
 
+-- ---------- 模块级权限判定 ----------
+-- 管理员恒为 edit（不受勾选限制）；其他人读自己那一行的 permissions，缺省 none。
+-- security definer：成员未必有权限直接读 app_members，这里以定义者身份查，顺带避免策略自引用递归。
+create or replace function public.module_perm(p_module text)
+returns text
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  select case
+           when public.is_admin() then 'edit'
+           else coalesce(
+             (select case
+                       when m.permissions ->> p_module in ('view', 'edit')
+                         then m.permissions ->> p_module
+                       else 'none'
+                     end
+                from public.app_members m
+               where m.id = auth.uid()
+               limit 1),
+             'none')
+         end
+$$;
+
+-- 能看（view 或 edit）
+create or replace function public.can_view(p_module text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$ select public.module_perm(p_module) in ('view', 'edit') $$;
+
+-- 能改（只有 edit；删除另有 is_admin 把关）
+create or replace function public.can_edit(p_module text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$ select public.module_perm(p_module) = 'edit' $$;
+
 -- app_members 自身：成员可读全表（页面要展示同事），仅管理员可增删改
 drop policy if exists "app_members_select" on public.app_members;
 create policy "app_members_select" on public.app_members
@@ -619,6 +670,8 @@ $$;
 -- 每张业务表加 owner_id
 alter table public.products             add column if not exists owner_id uuid;
 alter table public.sales_orders         add column if not exists owner_id uuid;
+-- 履约标签（老库升级用；必须在任何引用该列的语句之前）
+alter table public.sales_orders         add column if not exists tag text;
 alter table public.spu_mappings         add column if not exists owner_id uuid;
 alter table public.product_images       add column if not exists owner_id uuid;
 alter table public.purchase_orders      add column if not exists owner_id uuid;
@@ -683,19 +736,34 @@ drop trigger if exists image_lookups_set_owner on public.image_lookups;
 create trigger image_lookups_set_owner before insert on public.image_lookups
   for each row execute function public.set_owner_id();
 
--- 策略：团队共享——所有成员可读可写（查看 / 录入 / 编辑 / 导入），删除仅限管理员。
+-- 策略：按**模块**分档——勾了「可查看」才能 select，勾了「可编辑」才能 insert/update，
+-- 删除一律留给管理员（与界面上的删除入口一致）。
 -- 注意：PostgreSQL 的同表多条策略之间是 OR 关系，所以必须**按操作拆分**；
--- 若用一条 for all 覆盖，成员会连带拿到删除权。
+-- 若用一条 for all 覆盖，低权限成员会连带拿到删除权。
 do $$
 declare
+  -- [表名, 所属模块]；模块 id 必须与前端 PERMISSION_MODULES 里的 id 一致
+  pairs text[][] := array[
+    ['products',             'products'],
+    ['spu_mappings',         'products'],
+    ['sales_orders',         'sales_orders'],
+    ['purchase_orders',      'purchases'],
+    ['purchase_order_items', 'purchases'],
+    ['spu_info',             'images'],
+    ['product_images',       'images'],
+    ['other_expenses',       'other_expenses'],
+    ['market_snapshots',     'market'],
+    ['price_captures',       'sourcing'],
+    ['image_lookups',        'sourcing']
+  ];
+  i int;
   t text;
+  m text;
 begin
-  foreach t in array array[
-    'products', 'sales_orders', 'spu_mappings', 'product_images',
-    'purchase_orders', 'purchase_order_items', 'spu_info', 'other_expenses',
-    'market_snapshots', 'price_captures', 'image_lookups'
-  ]
-  loop
+  for i in 1 .. array_length(pairs, 1) loop
+    t := pairs[i][1];
+    m := pairs[i][2];
+
     execute format('drop policy if exists %I on public.%I', t || '_authenticated_all', t);
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format('drop policy if exists %I on public.%I', t || '_insert', t);
@@ -703,19 +771,32 @@ begin
     execute format('drop policy if exists %I on public.%I', t || '_delete', t);
 
     execute format(
-      'create policy %I on public.%I for select to authenticated using (public.is_member())',
-      t || '_select', t);
+      'create policy %I on public.%I for select to authenticated using (public.can_view(%L))',
+      t || '_select', t, m);
     execute format(
-      'create policy %I on public.%I for insert to authenticated with check (public.is_member())',
-      t || '_insert', t);
+      'create policy %I on public.%I for insert to authenticated with check (public.can_edit(%L))',
+      t || '_insert', t, m);
     execute format(
-      'create policy %I on public.%I for update to authenticated using (public.is_member()) with check (public.is_member())',
-      t || '_update', t);
+      'create policy %I on public.%I for update to authenticated using (public.can_edit(%L)) with check (public.can_edit(%L))',
+      t || '_update', t, m, m);
     execute format(
       'create policy %I on public.%I for delete to authenticated using (public.is_admin())',
       t || '_delete', t);
   end loop;
 end $$;
+
+-- 商品表特例：「商品导入」页本质就是批量写商品，
+-- 所以有 import 编辑权的人也应该能写 products（否则导入会在 RLS 层被拒）。
+drop policy if exists products_insert on public.products;
+create policy products_insert on public.products
+  for insert to authenticated
+  with check (public.can_edit('products') or public.can_edit('import'));
+
+drop policy if exists products_update on public.products;
+create policy products_update on public.products
+  for update to authenticated
+  using (public.can_edit('products') or public.can_edit('import'))
+  with check (public.can_edit('products') or public.can_edit('import'));
 
 -- 匿名一律不可见
 drop policy if exists "products_anon_read_on_sale" on public.products;

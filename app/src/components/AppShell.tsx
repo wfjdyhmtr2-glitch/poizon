@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
+import type { ModuleId } from "@/lib/types"
 import { useApp } from "@/contexts/AppContext"
 import { useTheme } from "@/hooks/useTheme"
 import { useDoubleClickCopy } from "@/hooks/useDoubleClickCopy"
@@ -56,32 +57,53 @@ const NAV_GROUPS: {
     hint: string
     /** 仅管理员可见（例如成员管理） */
     adminOnly?: boolean
+    /** 归属的权限模块；不给就不受模块权限限制（系统分组） */
+    module?: ModuleId
   }[]
 }[] = [
   {
     label: "概览",
     items: [
-      { to: "/finance", label: "财务看板", icon: Landmark, hint: "花了多少、赚了多少" },
-      { to: "/dashboard", label: "数据看板", icon: BarChart3, hint: "商品与库存概览" },
-      { to: "/sales", label: "销售看板", icon: TrendingUp, hint: "成交、退款与收入" },
-      { to: "/market", label: "市场机会", icon: Target, hint: "收藏与销量趋势选品" },
-      { to: "/lookup", label: "找同款比价", icon: ImagePlus, hint: "粘图认款 · 书签记价" },
+      { to: "/finance", label: "财务看板", icon: Landmark, hint: "花了多少、赚了多少", module: "finance" },
+      { to: "/dashboard", label: "数据看板", icon: BarChart3, hint: "商品与库存概览", module: "dashboard" },
+      { to: "/sales", label: "销售看板", icon: TrendingUp, hint: "成交、退款与收入", module: "sales" },
+      { to: "/market", label: "市场机会", icon: Target, hint: "收藏与销量趋势选品", module: "market" },
+      {
+        to: "/lookup",
+        label: "找同款比价",
+        icon: ImagePlus,
+        hint: "粘图认款 · 书签记价",
+        module: "sourcing",
+      },
     ],
   },
   {
     label: "经营",
     items: [
-      { to: "/products", label: "商品管理", icon: Package, hint: "商品资料与价格" },
-      { to: "/purchases", label: "入仓管理", icon: ClipboardList, hint: "采购订单维度" },
-      { to: "/images", label: "商品信息", icon: Images, hint: "SPUID 名称与主图登记" },
-      { to: "/sales/orders", label: "销售订单", icon: ShoppingBag, hint: "订单录入与批量导入" },
+      { to: "/products", label: "商品管理", icon: Package, hint: "商品资料与价格", module: "products" },
+      {
+        to: "/purchases",
+        label: "入仓管理",
+        icon: ClipboardList,
+        hint: "采购订单维度",
+        module: "purchases",
+      },
+      { to: "/images", label: "商品信息", icon: Images, hint: "SPUID 名称与主图登记", module: "images" },
+      {
+        to: "/sales/orders",
+        label: "销售订单",
+        icon: ShoppingBag,
+        hint: "订单录入与批量导入",
+        module: "sales_orders",
+      },
       {
         to: "/other-expenses",
         label: "其他费用",
         icon: Receipt,
         hint: "保证金、仓储费、取回费",
+        module: "other_expenses",
       },
-      { to: "/import", label: "商品导入", icon: Upload, hint: "商品 Excel / CSV 导入" },
+      { to: "/import", label: "商品导入", icon: Upload, hint: "商品 Excel / CSV 导入", module: "import" },
     ],
   },
   {
@@ -227,7 +249,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function SidebarInner() {
-  const { isAdmin, isCloud, user } = useApp()
+  const { canView, isAdmin, isCloud, membershipLoaded, user } = useApp()
 
   return (
     <div className="flex h-full flex-col">
@@ -244,30 +266,40 @@ function SidebarInner() {
       <Separator className="bg-sidebar-border" />
 
       <nav className="flex-1 space-y-4 overflow-y-auto p-3 thin-scrollbar">
-        {NAV_GROUPS.map((group) => (
-          <div key={group.label} className="space-y-1">
-            <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-              {group.label}
-            </p>
-            {group.items.filter((item) => !item.adminOnly || isAdmin).map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                  )
-                }
-              >
-                <item.icon className="size-4 shrink-0" />
-                <span className="flex-1 truncate">{item.label}</span>
-              </NavLink>
-            ))}
-          </div>
-        ))}
+        {NAV_GROUPS.map((group) => {
+          // 没有查看权限的模块整项不渲染；整组都没权限时，连分组标题一起隐藏。
+          // 权限还没读回来时先全部显示（乐观），免得菜单闪一下空白。
+          const items = group.items.filter(
+            (item) =>
+              (!item.adminOnly || isAdmin) &&
+              (!item.module || !membershipLoaded || canView(item.module)),
+          )
+          if (!items.length) return null
+          return (
+            <div key={group.label} className="space-y-1">
+              <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                {group.label}
+              </p>
+              {items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                    )
+                  }
+                >
+                  <item.icon className="size-4 shrink-0" />
+                  <span className="flex-1 truncate">{item.label}</span>
+                </NavLink>
+              ))}
+            </div>
+          )
+        })}
       </nav>
 
       <div className="space-y-3 p-3">

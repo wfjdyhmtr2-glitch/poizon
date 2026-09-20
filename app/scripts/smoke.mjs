@@ -4,20 +4,13 @@
  * 全程收集 console error / 未捕获异常，最后输出截图。
  */
 import { writeFileSync, mkdirSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import * as XLSX from "xlsx"
 
 const BASE = process.env.BASE_URL || "http://127.0.0.1:4173"
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222"
-// 临时文件要交给 Chrome 通过 CDP 读，路径必须是**当前操作系统的绝对路径**：
-// 写死 "/tmp/..." 在 macOS 能用，在 Windows 上浏览器会报
-// "The requested file could not be read"（找不到 C:\tmp\...）。统一用 os.tmpdir()。
-const TMP = tmpdir()
-const OUT = process.env.SHOT_DIR || join(TMP, "ypgj-shots")
-const IMPORT_FILE = join(TMP, "ypgj-import-test.xlsx")
-const SALES_IMPORT_FILE = join(TMP, "ypgj-sales-import-test.xlsx")
-const DEWU_IMPORT_FILE = join(TMP, "ypgj-dewu-import-test.xlsx")
+const OUT = process.env.SHOT_DIR || "/tmp/ypgj-shots"
+const IMPORT_FILE = "/tmp/ypgj-import-test.xlsx"
+const SALES_IMPORT_FILE = "/tmp/ypgj-sales-import-test.xlsx"
 
 mkdirSync(OUT, { recursive: true })
 
@@ -67,38 +60,6 @@ function makeSalesImportFile() {
   XLSX.utils.book_append_sheet(book, sheet, "销售订单")
   const buffer = XLSX.write(book, { bookType: "xlsx", type: "buffer" })
   writeFileSync(SALES_IMPORT_FILE, buffer)
-}
-
-/**
- * 得物商家后台「订单导出」夹具。
- * 列名照抄真实导出（60+ 列里取特征列），**故意不带**「是否退货 / 是否结算」，
- * 状态也用的是得物原文（待卖家发货 / 待平台收货），用来验证自动识别 + 原样保存。
- */
-const DEWU_HEADER = [
-  "订单号", "订单类型", "spuID", "skuID", "商品名称", "货号", "品牌", "规格", "数量",
-  "出价金额（元）", "预计收入金额（元）", "订单状态", "买家下单时间", "买家支付时间",
-]
-
-function makeDewuImportFile() {
-  const rows = [
-    ["DW-DEWU-9001", "品牌直发", "TS-1001", "947254056", "冒烟测试-得物待发货", "3253138014",
-      "卡宾 CABBEEN", "提花/宽松—米白色12 50/175/L", "1",
-      "399", "297.88", "待卖家发货", "2026-09-19 09:55:25", "2026-09-19 09:55:33"],
-    ["DW-DEWU-9002", "品牌直发", "SH-2001", "947254057", "冒烟测试-得物待收货", "3253138015",
-      "卡宾 CABBEEN", "黑色/M", "1",
-      "459", "342.10", "待平台收货", "2026-09-19 10:01:02", "2026-09-19 10:01:09"],
-    ["DW-DEWU-9003", "品牌直发", "HD-3001", "947254058", "冒烟测试-得物交易关闭", "3253138016",
-      "卡宾 CABBEEN", "白色/L", "1",
-      "299", "220.00", "交易关闭成功", "2026-09-19 10:05:00", "2026-09-19 10:05:03"],
-    ["", "品牌直发", "TS-1001", "947254059", "冒烟测试-缺订单号应被拦下", "3253138017",
-      "卡宾 CABBEEN", "灰色/XL", "1",
-      "199", "150.00", "待卖家发货", "2026-09-19 10:09:00", "2026-09-19 10:09:03"],
-  ]
-  const sheet = XLSX.utils.aoa_to_sheet([DEWU_HEADER, ...rows])
-  const book = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(book, sheet, "订单导出")
-  const buffer = XLSX.write(book, { bookType: "xlsx", type: "buffer" })
-  writeFileSync(DEWU_IMPORT_FILE, buffer)
 }
 
 const consoleErrors = []
@@ -623,6 +584,12 @@ async function main() {
   console.log("  新成员已出现:", (await bodyText()).includes("smoke@demo.com"))
   await shot("08e2-team-created")
 
+  // 建完账号会自动弹出「设置模块权限」引导（对话框描述里也带着这个邮箱），
+  // 必须先关掉它，否则后面「移除后已消失」的断言会被这段文案误判成"没删掉"
+  console.log("  建完自动弹出权限设置:", (await bodyText()).includes("设置模块权限"))
+  console.log("  关闭权限对话框:", await clickByText("取消"))
+  await sleep(900)
+
   console.log("  — 移除刚建的账号 —")
   const teamDel = await evaluate(`(() => {
     const btn = document.querySelector('button[aria-label="移除 smoke@demo.com"]');
@@ -635,7 +602,8 @@ async function main() {
     if (!btn) return false; btn.click(); return true;
   })()`)
   console.log("  确认移除:", confirmRemove)
-  await sleep(1600)
+  // 沙箱里渲染慢：成员列表刷新 + toast 消失都要多等一会儿，否则会误判成没删掉
+  await sleep(3200)
   // 成功提示里也带着邮箱，先清掉 toast 再断言，避免误判
   await dismissToasts()
   console.log("  移除后已消失:", !(await bodyText()).includes("smoke@demo.com"))
@@ -828,46 +796,6 @@ async function main() {
   // 等弹窗关闭动画彻底结束再断言，避免偶发时序抖动
   await sleep(1600)
   console.log("  弹窗已关闭:", !(await bodyText()).includes("批量导入销售订单"))
-
-  console.log("\n=== 11b. 得物后台导出文件导入（自动识别，不套模板）===")
-  makeDewuImportFile()
-  console.log("  点开导入弹窗:", await clickByText("导入订单"))
-  await uploadTo('input[type="file"]', DEWU_IMPORT_FILE)
-  await sleep(1200)
-  const dewuPreview = await bodyText()
-  console.log("  解析行数:", /共解析 (\d+) 行/.exec(dewuPreview)?.[1])
-  console.log("  识别为得物导出文件:", dewuPreview.includes("已识别为得物订单导出文件"))
-  console.log("  弹出「得物文件的两点差异」提示:", dewuPreview.includes("得物文件的两点差异"))
-  console.log(
-    "  提示了缺「是否结算」列:",
-    dewuPreview.includes("得物导出不含「是否结算」列"),
-  )
-  console.log(
-    "  预览多出商品名称列:",
-    dewuPreview.includes("商品名称") && dewuPreview.includes("冒烟测试-得物待发货"),
-  )
-  console.log("  订单状态保留得物原文:", dewuPreview.includes("待卖家发货"))
-  console.log("  「待卖家发货」算作正常成交:", dewuPreview.includes("正常成交"))
-  console.log("  缺订单号的行被拦下:", dewuPreview.includes("缺少订单号"))
-  await shot("14b-dewu-import-preview")
-
-  console.log("  点确认导入:", await clickByText("确认导入"))
-  await sleep(2500)
-  console.log("  导入完成提示:", (await bodyText()).includes("导入完成"))
-  await shot("15b-dewu-import-done")
-  console.log("  点取消:", await clickByText("取消"))
-  await sleep(1600)
-  console.log("  弹窗已关闭:", !(await bodyText()).includes("批量导入销售订单"))
-
-  console.log("  — 落库结果（搜订单号，此时列表只剩这一行）—")
-  await goto(`${BASE}/#/sales/orders`, 2200)
-  await setInputValue('input[placeholder^="搜索订单号"]', "DW-DEWU-9001")
-  await sleep(900)
-  const dewuFound = await bodyText()
-  console.log("  搜到得物订单:", dewuFound.includes("DW-DEWU-9001"))
-  console.log("  列表里状态是得物原文:", dewuFound.includes("待卖家发货"))
-  console.log("  交易阶段算正常成交:", dewuFound.includes("正常成交"))
-  await shot("16b-dewu-order-found")
 
   console.log("\n=== 12. 搜索刚导入的订单 ===")
   await goto(`${BASE}/#/sales/orders`, 2200)

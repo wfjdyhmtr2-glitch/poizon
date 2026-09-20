@@ -14,21 +14,12 @@ import type {
 
 /* ------------------------- 解析与派生 ------------------------- */
 
-/**
- * 得物后台导出的「订单生效中」状态（买家已付款，只是还没走完流程）。
- * 这些状态在页面上原样显示，但交易阶段、库存占用必须当作「交易成功」来算，
- * 否则待发货的订单不占库存、盈亏也会漏。数据库侧 order_stock_effect / trade_stage
- * 用的是同一套正则，两边要一起改。
- */
-export const ACTIVE_ORDER_STATUS_PATTERN =
-  /交易成功|已完成|已成交|成交成功|待卖家发货|待平台发货|已发货|待平台收货|平台已收货|待买家收货|待收货|已签收|鉴别中|待鉴别|已入仓|待入仓/
-
 /** 把平台里五花八门的写法收敛到三种标准状态 */
 export function normalizeOrderStatus(raw: string): OrderStatus | string {
   const v = (raw || "").trim()
   if (!v) return "交易成功"
   if (/关闭成功|交易关闭|已关闭|取消成功/.test(v)) return "交易关闭成功"
-  if (ACTIVE_ORDER_STATUS_PATTERN.test(v)) return "交易成功"
+  if (/交易成功|已完成|已成交|成交成功/.test(v)) return "交易成功"
   if (/交易失败|未付款|待付款|已取消|付款失败|失败/.test(v)) return "交易失败"
   return v
 }
@@ -119,6 +110,7 @@ export function emptySalesDraft(): SalesOrderDraft {
     bid_amount: null,
     expected_income: null,
     after_sales: "",
+    tag: "",
     paid_at: new Date().toISOString(),
   }
 }

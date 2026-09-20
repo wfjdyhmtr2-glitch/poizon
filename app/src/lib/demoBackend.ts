@@ -252,7 +252,7 @@ function readDemoSession(): AuthUser | null {
   }
 }
 
-/** 初始演示成员：一个管理员 + 一个普通成员 */
+/** 初始演示成员：一个管理员 + 一个普通成员（普通成员只给部分模块，方便看权限效果） */
 function buildDemoMembers(): AppMember[] {
   const now = new Date().toISOString()
   return [
@@ -261,6 +261,20 @@ function buildDemoMembers(): AppMember[] {
       email: DEMO_ACCOUNT.email,
       role: "admin",
       display_name: "店主（演示）",
+      // 管理员不受模块权限限制，这里给满只是为了界面上看得明白
+      permissions: {
+        finance: "edit",
+        dashboard: "edit",
+        sales: "edit",
+        market: "edit",
+        sourcing: "edit",
+        products: "edit",
+        purchases: "edit",
+        images: "edit",
+        sales_orders: "edit",
+        other_expenses: "edit",
+        import: "edit",
+      },
       created_at: now,
       updated_at: now,
     },
@@ -269,6 +283,14 @@ function buildDemoMembers(): AppMember[] {
       email: "staff@demo.com",
       role: "member",
       display_name: "店员小张",
+      // 演示三档效果：能看不能改 / 能改 / 完全看不到（未列出的模块）
+      permissions: {
+        dashboard: "view",
+        sales: "view",
+        products: "view",
+        purchases: "edit",
+        sales_orders: "edit",
+      },
       created_at: now,
       updated_at: now,
     },
@@ -278,7 +300,11 @@ function buildDemoMembers(): AppMember[] {
 function readMemberStore(): AppMember[] {
   try {
     const raw = localStorage.getItem(MEMBER_KEY)
-    if (raw) return JSON.parse(raw) as AppMember[]
+    if (raw) {
+      // 旧数据可能没有 permissions 字段（模块权限是后加的），读出来补成空对象 = 什么都看不到
+      const rows = JSON.parse(raw) as AppMember[]
+      return rows.map((m) => ({ ...m, permissions: m.permissions ?? {} }))
+    }
     if (localStorage.getItem(MEMBER_SEEDED_KEY)) return []
   } catch {
     /* ignore */
@@ -1259,6 +1285,7 @@ export function createDemoBackend(): Backend {
         email,
         role: draft.role,
         display_name: draft.display_name?.trim() || null,
+        permissions: draft.permissions ?? {},
         created_at: now,
         updated_at: now,
       }
@@ -1274,6 +1301,14 @@ export function createDemoBackend(): Backend {
         throw new BackendError("演示账号不能被降级")
       }
       rows[idx] = { ...rows[idx], role, updated_at: new Date().toISOString() }
+      writeMemberStore(rows)
+    },
+
+    async setMemberPermissions(id: string, permissions) {
+      const rows = readMemberStore()
+      const idx = rows.findIndex((m) => m.id === id)
+      if (idx < 0) throw new BackendError("成员不存在")
+      rows[idx] = { ...rows[idx], permissions, updated_at: new Date().toISOString() }
       writeMemberStore(rows)
     },
 

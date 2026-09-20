@@ -22,6 +22,36 @@ import { createClient } from "npm:@supabase/supabase-js@2"
 /** 超级管理员：永远拥有 admin 角色，不能被降级或删除 */
 const ADMIN_EMAIL = "shuo@dewu.com"
 
+/**
+ * 可分配的模块（必须与前端 `lib/types.ts` 的 PERMISSION_MODULES 保持一致）。
+ * 服务端做白名单清洗：多余字段一律丢弃，避免脏数据绕过界面写进库里。
+ */
+const MODULE_IDS = [
+  "finance",
+  "dashboard",
+  "sales",
+  "market",
+  "sourcing",
+  "products",
+  "purchases",
+  "images",
+  "sales_orders",
+  "other_expenses",
+  "import",
+]
+
+/** 清洗权限：{ "<moduleId>": "view" | "edit" }，非法的一律丢掉（缺省即不能看） */
+function cleanPermissions(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {}
+  const src = raw as Record<string, unknown>
+  const out: Record<string, string> = {}
+  for (const id of MODULE_IDS) {
+    const level = src[id]
+    if (level === "view" || level === "edit") out[id] = level
+  }
+  return out
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -105,6 +135,7 @@ Deno.serve(async (req) => {
           email,
           role,
           display_name: displayName,
+          permissions: cleanPermissions(payload.permissions),
         })
         if (memberError) {
           // 成员记录没写成，就把刚建的账号删掉，避免留下一个登进去也看不到数据的空账号
@@ -133,6 +164,29 @@ Deno.serve(async (req) => {
         const { error } = await admin
           .from("app_members")
           .update({ role, updated_at: new Date().toISOString() })
+          .eq("id", id)
+        if (error) return json({ error: error.message }, 400)
+        return json({ ok: true })
+      }
+
+      /* ---------- 设置模块权限（不可查看 / 仅查看 / 查看和编辑） ---------- */
+      case "setPermissions": {
+        const id = String(payload.id ?? "")
+        if (!id) return json({ error: "缺少成员 id" }, 400)
+        const { data: target } = await admin
+          .from("app_members")
+          .select("id")
+          .eq("id", id)
+          .maybeSingle()
+        if (!target) return json({ error: "成员不存在" }, 404)
+
+        // 管理员本来就不受勾选限制，给他存权限不会报错、只是不起作用
+        const { error } = await admin
+          .from("app_members")
+          .update({
+            permissions: cleanPermissions(payload.permissions),
+            updated_at: new Date().toISOString(),
+          })
           .eq("id", id)
         if (error) return json({ error: error.message }, 400)
         return json({ ok: true })

@@ -8,6 +8,7 @@ import type {
   MarketRankRow,
   MarketSnapshotDraft,
   MarketTrendSeries,
+  MemberPermissions,
   MemberRole,
   OtherExpense,
   OtherExpenseDraft,
@@ -117,6 +118,8 @@ export interface Backend {
   /** 管理员直接创建账号（云端走 Edge Function，用 service_role 建号） */
   createMember(draft: AppMemberDraft): Promise<AppMember>
   setMemberRole(id: string, role: MemberRole): Promise<void>
+  /** 设置某成员的模块权限（整体覆盖；空对象 = 什么都不能看） */
+  setMemberPermissions(id: string, permissions: MemberPermissions): Promise<void>
   resetMemberPassword(id: string, password: string): Promise<void>
   deleteMembers(ids: string[]): Promise<void>
 

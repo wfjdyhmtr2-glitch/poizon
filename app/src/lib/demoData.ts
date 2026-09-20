@@ -160,6 +160,8 @@ export function buildDemoSalesOrders(products: Product[]): SalesOrder[] {
       bid_amount: Number((product.price * (0.96 + (i % 5) * 0.02)).toFixed(2)),
       expected_income: charges,
       after_sales: afterSales,
+      // 履约标签：演示几种常见组合，界面上能看到效果
+      tag: ["寄售", "优先发货寄售", "普通现货", "优先发货寄售换新"][i % 4],
       paid_at: paidAt,
       trade_stage: stage,
       created_at: paidAt ?? new Date(Date.now() - daysAgo * 86400_000).toISOString(),

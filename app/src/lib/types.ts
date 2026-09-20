@@ -153,6 +153,11 @@ export interface SalesOrder {
   /** 预计收入金额（元） */
   expected_income: number | null
   after_sales: string | null
+  /**
+   * 履约方式等标记（如「寄售 · 优先发货」「普通现货 · 换新」）。
+   * 只作展示与筛选参考，**不参与盈亏计算**。
+   */
+  tag: string | null
   /** 买家支付时间 */
   paid_at: string | null
   /** 派生字段，云端由数据库生成列计算 */
@@ -324,22 +329,90 @@ export interface OtherExpenseDraft {
  */
 export type MemberRole = "admin" | "member"
 
+/* ---------- 模块级权限（三档：不可查看 / 仅查看 / 查看和编辑） ---------- */
+
+/**
+ * 可分配权限的模块，与左侧导航一一对应。
+ * `id` 是**存进数据库的稳定标识**，改界面文案时不要动它（否则老数据会失配）。
+ * `to` 是该模块的首页路由，用于「进首页时落到第一个有权限的模块」。
+ * 「系统」分组（成员管理 / 云端数据库）不在列表里：成员管理仅管理员可见，
+ * 云端数据库人人可用。
+ */
+export const PERMISSION_MODULES = [
+  { id: "finance", label: "财务看板", group: "概览", to: "/finance" },
+  { id: "dashboard", label: "数据看板", group: "概览", to: "/dashboard" },
+  { id: "sales", label: "销售看板", group: "概览", to: "/sales" },
+  { id: "market", label: "市场机会", group: "概览", to: "/market" },
+  { id: "sourcing", label: "找同款比价", group: "概览", to: "/lookup" },
+  { id: "products", label: "商品管理", group: "经营", to: "/products" },
+  { id: "purchases", label: "入仓管理", group: "经营", to: "/purchases" },
+  { id: "images", label: "商品信息", group: "经营", to: "/images" },
+  { id: "sales_orders", label: "销售订单", group: "经营", to: "/sales/orders" },
+  { id: "other_expenses", label: "其他费用", group: "经营", to: "/other-expenses" },
+  { id: "import", label: "商品导入", group: "经营", to: "/import" },
+] as const
+
+export type ModuleId = (typeof PERMISSION_MODULES)[number]["id"]
+
+/** 三档权限。模块**没出现在 permissions 里**就等同于 none（不可查看） */
+export type PermissionLevel = "none" | "view" | "edit"
+
+/** 模块 → 权限级别；缺省即 none */
+export type MemberPermissions = Partial<Record<ModuleId, PermissionLevel>>
+
+/** 三档的说明文案（权限设置界面用） */
+export const PERMISSION_LEVELS: { value: PermissionLevel; label: string; hint: string }[] = [
+  { value: "none", label: "不可查看", hint: "左侧不显示该模块，数据库层面也读不到数据" },
+  { value: "view", label: "仅查看", hint: "能看，但不能新增或修改" },
+  { value: "edit", label: "查看和编辑", hint: "能新增和修改；删除仍仅管理员可用" },
+]
+
+/** 读某模块的权限级别，缺省按 none 处理 */
+export function permOf(
+  perms: MemberPermissions | null | undefined,
+  module: ModuleId,
+): PermissionLevel {
+  const level = perms?.[module]
+  return level === "view" || level === "edit" ? level : "none"
+}
+
+/** 管理员不受模块权限限制，永远可查看 */
+export function canViewModule(
+  perms: MemberPermissions | null | undefined,
+  module: ModuleId,
+  isAdmin = false,
+): boolean {
+  return isAdmin || permOf(perms, module) !== "none"
+}
+
+/** 管理员不受模块权限限制，永远可编辑（删除由 isAdmin 单独控制） */
+export function canEditModule(
+  perms: MemberPermissions | null | undefined,
+  module: ModuleId,
+  isAdmin = false,
+): boolean {
+  return isAdmin || permOf(perms, module) === "edit"
+}
+
 /** 成员档案（即账号白名单）：不在这张表里的账号看不到任何业务数据 */
 export interface AppMember {
   id: string
   email: string
   role: MemberRole
   display_name: string | null
+  /** 各模块的权限；空对象表示**什么都不能看**（管理员不受此限制） */
+  permissions: MemberPermissions
   created_at: string
   updated_at: string
 }
 
-/** 新建账号：邮箱 + 初始密码 + 角色 */
+/** 新建账号：邮箱 + 初始密码 + 角色（权限默认全空，创建后再勾） */
 export interface AppMemberDraft {
   email: string
   password: string
   role: MemberRole
   display_name?: string | null
+  permissions?: MemberPermissions
 }
 
 export interface StageSlice {

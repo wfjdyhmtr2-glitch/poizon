@@ -12,6 +12,7 @@ import type {
   ImageLookupDraft,
   MarketQuery,
   MarketTrendSeries,
+  MemberPermissions,
   MemberRole,
   OtherExpense,
   PriceCapture,
@@ -26,6 +27,7 @@ import type {
   SalesOrder,
   SpuMapping,
 } from "./types"
+import { PERMISSION_MODULES } from "./types"
 import { compressImage, placeholderImage } from "./format"
 import { computeTradeStage } from "./sales"
 
@@ -44,7 +46,7 @@ const PRODUCT_COLUMNS =
 
 /** trade_stage 是数据库生成列，只读不写 */
 const SALES_COLUMNS =
-  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,paid_at,trade_stage,created_at,updated_at"
+  "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,tag,paid_at,trade_stage,created_at,updated_at"
 
 const SALES_SORT_MAP: Record<string, { column: string; ascending: boolean }> = {
   paid_desc: { column: "paid_at", ascending: false },
@@ -72,7 +74,19 @@ function normalizeOtherExpense(row: Record<string, unknown>): OtherExpense {
   }
 }
 
-const MEMBER_COLUMNS = "id,email,role,display_name,created_at,updated_at"
+const MEMBER_COLUMNS = "id,email,role,display_name,permissions,created_at,updated_at"
+
+/** 权限列解析：只保留合法模块 + 合法档位，其余丢弃（避免历史脏数据把界面搞乱） */
+function normalizePermissions(raw: unknown): MemberPermissions {
+  if (!raw || typeof raw !== "object") return {}
+  const source = raw as Record<string, unknown>
+  const out: MemberPermissions = {}
+  for (const mod of PERMISSION_MODULES) {
+    const level = source[mod.id]
+    if (level === "view" || level === "edit") out[mod.id] = level
+  }
+  return out
+}
 
 /** 成员行归一化 */
 function normalizeMember(row: Record<string, unknown>): AppMember {
@@ -81,6 +95,7 @@ function normalizeMember(row: Record<string, unknown>): AppMember {
     email: String(row.email ?? ""),
     role: row.role === "admin" ? "admin" : "member",
     display_name: row.display_name ? String(row.display_name) : null,
+    permissions: normalizePermissions(row.permissions),
     created_at: String(row.created_at ?? ""),
     updated_at: String(row.updated_at ?? ""),
   }
@@ -734,6 +749,7 @@ export function createCloudBackend(config: CloudConfig): Backend {
         password: draft.password,
         role: draft.role,
         display_name: draft.display_name ?? null,
+        permissions: draft.permissions ?? {},
       })
       const { data, error } = await client()
         .from("app_members")
@@ -748,6 +764,10 @@ export function createCloudBackend(config: CloudConfig): Backend {
 
     async setMemberRole(id: string, role: MemberRole) {
       await callAdminUsers(client(), { action: "setRole", id, role })
+    },
+
+    async setMemberPermissions(id: string, permissions: MemberPermissions) {
+      await callAdminUsers(client(), { action: "setPermissions", id, permissions })
     },
 
     async resetMemberPassword(id: string, password: string) {
@@ -1282,6 +1302,7 @@ function normalizeSales(row: Record<string, unknown>): SalesOrder {
     bid_amount: nullableNumber(row.bid_amount),
     expected_income: nullableNumber(row.expected_income),
     after_sales: (row.after_sales as string) ?? null,
+    tag: (row.tag as string) ?? null,
     paid_at: (row.paid_at as string) ?? null,
     // 生成列缺失时（老库）回退到前端推导，保证界面不崩
     trade_stage:

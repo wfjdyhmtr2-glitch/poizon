@@ -204,6 +204,11 @@ export const SALES_IMPORT_COLUMNS: {
   { header: "预计收入金额（元）", key: "expected_income" },
   { header: "售后服务", key: "after_sales", hint: "如：无 / 退货退款 / 换货" },
   { header: "买家支付时间", key: "paid_at", hint: "2026-09-01 12:30，也支持 Excel 日期" },
+  {
+    header: "标签",
+    key: "tag",
+    hint: "履约方式等标记，如「寄售 · 优先发货」「普通现货 · 换新」；仅作展示，不参与盈亏",
+  },
 ]
 
 /** 平台侧原始订单状态 */
