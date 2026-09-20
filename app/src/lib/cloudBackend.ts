@@ -44,6 +44,31 @@ const TABLE_MISSING =
 const PRODUCT_COLUMNS =
   "id,name,sku,purchase_platform,category,brand,gender,seasons,colors,sizes,material,price,net_price,platform_fee,shipping_fee,cost_price,stock,locked_stock,stock_alert,rebate,remark,status,is_new,cover_url,images,description,tags,created_at,updated_at"
 
+/**
+ * 分页拉全量行。
+ * ⚠️ PostgREST 单次最多返回 1000 行（服务端 max-rows），
+ * 直接写 `.limit(5000)` 会被**静默截断**成 1000 行 —— 看板统计会因此算少（实测订单 1624 条只统计到 1000 条）。
+ */
+async function fetchAllPages<T>(
+  build: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: T[] | null; error: { message?: string } | null }>,
+  maxPages = 60,
+): Promise<T[]> {
+  const size = 1000
+  const out: T[] = []
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * size
+    const { data, error } = await build(from, from + size - 1)
+    if (error) throw new BackendError(translateDbError(error.message ?? "读取失败"))
+    const rows = data ?? []
+    out.push(...rows)
+    if (rows.length < size) break
+  }
+  return out
+}
+
 /** trade_stage 是数据库生成列，只读不写 */
 const SALES_COLUMNS =
   "id,order_no,sku,spec,order_status,is_returned,is_settled,bid_amount,expected_income,after_sales,tag,paid_at,resolved_sku,trade_stage,created_at,updated_at"
@@ -306,12 +331,10 @@ export function createCloudBackend(config: CloudConfig): Backend {
     },
 
     async fetchForDashboard() {
-      const { data, error } = await table()
-        .select(PRODUCT_COLUMNS)
-        .order("updated_at", { ascending: false })
-        .limit(2000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      return (data ?? []).map((r) => normalize(r as Record<string, unknown>))
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        table().select(PRODUCT_COLUMNS).order("updated_at", { ascending: false }).range(from, to),
+      )
+      return rows.map((r) => normalize(r))
     },
 
     async getProduct(id) {
@@ -410,12 +433,10 @@ export function createCloudBackend(config: CloudConfig): Backend {
     },
 
     async fetchSalesForDashboard() {
-      const { data, error } = await salesTable()
-        .select(SALES_COLUMNS)
-        .order("paid_at", { ascending: false })
-        .limit(5000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      return (data ?? []).map((r) => normalizeSales(r as Record<string, unknown>))
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        salesTable().select(SALES_COLUMNS).order("paid_at", { ascending: false }).range(from, to),
+      )
+      return rows.map((r) => normalizeSales(r))
     },
 
     async getSalesOrder(id) {
@@ -477,13 +498,14 @@ export function createCloudBackend(config: CloudConfig): Backend {
     /* ---------------- SPU 对照 ---------------- */
 
     async listSpuMappings() {
-      const { data, error } = await client()
-        .from("spu_mappings")
-        .select("id,external_id,sku,note,created_at")
-        .order("created_at", { ascending: false })
-        .limit(2000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      return (data ?? []).map((r) => normalizeMapping(r as Record<string, unknown>))
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        client()
+          .from("spu_mappings")
+          .select("id,external_id,sku,note,created_at")
+          .order("created_at", { ascending: false })
+          .range(from, to),
+      )
+      return rows.map((r) => normalizeMapping(r))
     },
 
     async saveSpuMapping(draft) {
@@ -512,27 +534,29 @@ export function createCloudBackend(config: CloudConfig): Backend {
         .eq("sku", sku)
         .limit(1000)
       const ids = [sku, ...((mappings ?? []) as { external_id: string }[]).map((m) => m.external_id)]
-      const { data, error } = await salesTable()
-        .select(SALES_COLUMNS)
-        .in("sku", ids)
-        .order("paid_at", { ascending: false })
-        .limit(5000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      return (data ?? []).map((r) => normalizeSales(r as Record<string, unknown>))
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        salesTable()
+          .select(SALES_COLUMNS)
+          .in("sku", ids)
+          .order("paid_at", { ascending: false })
+          .range(from, to),
+      )
+      return rows.map((r) => normalizeSales(r))
     },
 
     /* ---------------- 图片库 ---------------- */
 
     async listProductImages(query) {
-      let q = client().from("product_images").select("id,sku,color,url,created_at")
-      if (query?.sku) q = q.eq("sku", query.sku)
-      if (query?.color) q = q.eq("color", query.color)
-      const { data, error } = await q
-        .order("sku", { ascending: true })
-        .order("created_at", { ascending: true })
-        .limit(5000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      return (data ?? []).map((r) => normalizeImage(r as Record<string, unknown>))
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) => {
+        let q = client().from("product_images").select("id,sku,color,url,created_at")
+        if (query?.sku) q = q.eq("sku", query.sku)
+        if (query?.color) q = q.eq("color", query.color)
+        return q
+          .order("sku", { ascending: true })
+          .order("created_at", { ascending: true })
+          .range(from, to)
+      })
+      return rows.map((r) => normalizeImage(r))
     },
 
     async addProductImage(draft) {
@@ -557,27 +581,27 @@ export function createCloudBackend(config: CloudConfig): Backend {
     /* ---------------- 入仓单 ---------------- */
 
     async listPurchaseOrders() {
-      const { data: pos, error } = await client()
-        .from("purchase_orders")
-        .select("id,order_no,platform,purchased_at,shipping_fee,remark,created_at,updated_at")
-        .order("created_at", { ascending: false })
-        .limit(2000)
-      if (error) throw new BackendError(translateDbError(error.message))
-      const { data: items, error: itemError } = await client()
-        .from("purchase_order_items")
-        .select("id,purchase_order_id,sku,name,price,color,size,quantity,unit_cost")
-        .limit(20000)
-      if (itemError) throw new BackendError(translateDbError(itemError.message))
+      const pos = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        client()
+          .from("purchase_orders")
+          .select("id,order_no,platform,purchased_at,shipping_fee,remark,created_at,updated_at")
+          .order("created_at", { ascending: false })
+          .range(from, to),
+      )
+      const items = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        client()
+          .from("purchase_order_items")
+          .select("id,purchase_order_id,sku,name,price,color,size,quantity,unit_cost")
+          .range(from, to),
+      )
       const byPo = new Map<string, Record<string, unknown>[]>()
-      for (const it of (items ?? []) as Record<string, unknown>[]) {
+      for (const it of items) {
         const key = String(it.purchase_order_id)
         const list = byPo.get(key) ?? []
         list.push(it)
         byPo.set(key, list)
       }
-      return (pos ?? []).map((r) =>
-        normalizePurchaseOrder(r as Record<string, unknown>, byPo.get(String(r.id)) ?? []),
-      )
+      return pos.map((r) => normalizePurchaseOrder(r, byPo.get(String(r.id)) ?? []))
     },
 
     async createPurchaseOrder(draft) {
