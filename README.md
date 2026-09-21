@@ -244,11 +244,23 @@ Settings → Edge Functions → Secrets → 新增：
 采购订单截图丢进去（或直接 Command+V 粘贴），自动读出「商品、规格、数量、单价」，
 填进预览表里让你核对、补 SPUID（填货号也行，会自动认），确认后一次导入。
 
-部署方式和上面完全一样（**密钥共用，不用重复配**）：
+部署方式和上面完全一样（**密钥共用，不用重复配**）。进去以后按这个顺序来 ——
+⚠️ **「函数名」不是一开始就让你填的，它在编辑器底部（`Deploy function` 按钮旁边）**，
+这是最容易卡住的一步：
 
-Edge Functions → Deploy a new function → Via Editor → 函数名 **`recognize-purchase`**（必须一致）→
-把 `app/supabase/functions/recognize-purchase/index.ts` 整段粘贴进去 → Deploy
-（"Verify JWT with legacy secret" 保持**关闭**）。
+1. 左侧 **Edge Functions** → 右上 **Deploy a new function** → 选 **Via Editor**
+   （若先弹出模板列表，随便选一个即可，下一步会把模板代码整个删掉）
+2. 编辑器里先清空：**Command + A → Delete**（模板代码必须删干净）
+3. 把 `app/supabase/functions/recognize-purchase/index.ts` 整段粘进去（Command + V）
+4. 在**编辑器底部 `Deploy function` 按钮旁边**的 **Function name** 里填 `recognize-purchase`
+   —— 必须完全一致，前端按这个名字调用
+5. 有 **"Verify JWT with legacy secret"** 开关就**关掉**（与 `recognize-product` 保持一致），
+   然后点 **Deploy function**
+6. **Secrets 不用重新配**：`VISION_API_KEY` 早就在了（`recognize-product` 在用同一个）
+
+> 嫌点界面麻烦的话，可以让我用 CLI 直接部署（不需要 Docker、也不用点界面）。给我一个 Supabase
+> **access token**（Account → Access Tokens → Generate new token，`sbp_` 开头）即可：
+> `SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy recognize-purchase --use-api --no-verify-jwt --project-ref <项目ref>`
 
 > 不部署也能用——「粘贴表格 / 上传 Excel」那条路一直都在，只是没有截图识别而已。
 > ⚠️ 识别结果**一定要核对**：视觉模型看密集列表会看错数字，金额错了比手填更糟。

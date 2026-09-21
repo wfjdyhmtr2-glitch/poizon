@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react"
 import { Download, FileSpreadsheet, ImagePlus, Loader2, Upload } from "lucide-react"
 
+import { OptionCombobox } from "@/components/OptionCombobox"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -15,6 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useApp } from "@/contexts/AppContext"
+import { PURCHASE_PLATFORMS, mergeOptions } from "@/lib/constants"
 import { formatMoney } from "@/lib/format"
 import type { PurchaseOrderDraft, RecognizedPurchaseRow, SpuInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -142,6 +144,8 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
   const [notice, setNotice] = useState("")
   const [text, setText] = useState("")
   const [countStock, setCountStock] = useState(true)
+  // 这一批统一用的购入平台：截图识别读不出平台时靠它兜底，读出来了也允许人工改
+  const [batchPlatform, setBatchPlatform] = useState("")
   const [importing, setImporting] = useState(false)
   const [recognizing, setRecognizing] = useState(false)
   const [progress, setProgress] = useState("")
@@ -165,6 +169,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     setText("")
     setProgress("")
     setRecognizeIssues([])
+    setBatchPlatform("")
   }
 
   /** 预览表里直接改一行（识别难免有错，得能就地修） */
@@ -277,6 +282,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     setRecognizeIssues([])
     const issues: string[] = []
     const added: ParsedRow[] = []
+    let foundPlatform = ""
     try {
       for (let i = 0; i < images.length; i++) {
         const label = images[i].name || `第 ${i + 1} 张截图`
@@ -288,11 +294,14 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
             issues.push(`${label}：${res.note || "没认出商品行"}`)
             continue
           }
+          // 模型读到的平台只用来**预填上方那个平台框**，不写进行里 ——
+          // 这样整批的平台只有一个出处，改一处就全改（模型认错了也一眼能纠）
+          if (res.platform.trim()) foundPlatform = res.platform.trim()
           for (const r of res.rows as RecognizedPurchaseRow[]) {
             const { color, size } = splitSpec(r.spec)
             added.push({
               orderNo: "",
-              platform: res.platform || "",
+              platform: "",
               purchasedAt: normalizeDate(res.date) || todayStr(),
               skuRaw: "",
               sku: "",
@@ -314,6 +323,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
       }
       if (added.length) {
         setRows((prev) => [...prev, ...added])
+        if (foundPlatform) setBatchPlatform((prev) => prev || foundPlatform)
         setNotice(`截图识别出 ${added.length} 行，请核对商品名、数量、单价，并补上 SPUID / 货号后再导入`)
       } else if (!issues.length) {
         setNotice("这几张截图里没认出采购明细")
@@ -325,6 +335,21 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     }
   }
 
+  /**
+   * 一行的最终平台：**行里写了就以行为准，没写就用上面那个「平台」框**。
+   * 截图识别读不出平台是常事（平台名往往只在角标里），所以给整批一个统一入口；
+   * 而粘贴的表格里逐行写了平台时不会被覆盖。
+   */
+  function effectivePlatform(row: ParsedRow): string {
+    return row.platform.trim() || batchPlatform.trim()
+  }
+
+  /** 平台候选 = 内置常用 + 这一批里出现过的（与「其他费用」同一套规则：可选可输） */
+  const platformOptions = useMemo(
+    () => mergeOptions(PURCHASE_PLATFORMS, [batchPlatform, ...rows.map((r) => r.platform)]),
+    [batchPlatform, rows],
+  )
+
   /** 按入仓单号分组；没写单号的按「平台 + 日期」自动归组并生成单号 */
   const groups = useMemo(() => {
     const usable = rows.filter((r) => r.sku.trim())
@@ -332,7 +357,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     const stamp = new Date()
     const tag = `${String(stamp.getMonth() + 1).padStart(2, "0")}${String(stamp.getDate()).padStart(2, "0")}-${String(stamp.getHours()).padStart(2, "0")}${String(stamp.getMinutes()).padStart(2, "0")}`
     for (const row of usable) {
-      const key = row.orderNo.trim() || `__auto__${row.platform}|${row.purchasedAt}`
+      const key = row.orderNo.trim() || `__auto__${effectivePlatform(row)}|${row.purchasedAt}`
       const list = map.get(key) ?? []
       list.push(row)
       map.set(key, list)
@@ -344,14 +369,14 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
       const first = list[0]
       return {
         orderNo: isAuto ? `导入${tag}-${autoIndex}` : first.orderNo.trim(),
-        platform: first.platform || null,
+        platform: effectivePlatform(first) || null,
         purchasedAt: first.purchasedAt || null,
         shippingFee: list.find((r) => r.shippingFee !== null)?.shippingFee ?? null,
         remark: first.remark || (countStock ? null : "补录历史采购（不计库存）"),
         rows: list,
       }
     })
-  }, [rows, countStock])
+  }, [rows, countStock, batchPlatform])
 
   const totalAmount = useMemo(
     () => rows.reduce((acc, r) => acc + (r.unitCost ?? 0) * r.quantity, 0),
@@ -526,6 +551,28 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
             />
           </div>
 
+          {rows.length ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">平台</span>
+                <OptionCombobox
+                  id="po-import-platform"
+                  label="平台"
+                  value={batchPlatform}
+                  onChange={setBatchPlatform}
+                  options={platformOptions}
+                  placeholder="如 1688 / 拼多多 / 淘宝"
+                  hint="这一批统一用哪个平台进的货"
+                  className="w-[180px]"
+                />
+              </div>
+              <span className="min-w-[200px] flex-1 text-xs text-muted-foreground">
+                这一批统一用哪个平台进的货：<strong>截图识别的行都用它</strong>
+                （截图里通常读不到平台）；表格里<strong>逐行写了平台的行不受影响</strong>。
+              </span>
+            </div>
+          ) : null}
+
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
             <Checkbox
               aria-label="计入库存"
@@ -636,7 +683,7 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
                           />
                         </td>
                         <td className="px-2 py-1.5 text-muted-foreground">
-                          {[r.platform, r.purchasedAt].filter(Boolean).join(" · ") || "—"}
+                          {[effectivePlatform(r), r.purchasedAt].filter(Boolean).join(" · ") || "—"}
                         </td>
                         <td className="px-2 py-1.5 text-destructive">{r.issue ?? ""}</td>
                       </tr>

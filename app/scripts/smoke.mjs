@@ -608,9 +608,10 @@ async function main() {
     poDialogText.includes("补录历史采购") && poDialogText.includes("不动库存"),
   )
   // 粘贴一张表（走 textarea 的 onBlur 解析）
+  // 平台这一列**故意留空**：用来验证「平台」统一设置框（截图识别的行就是这种情况）
   const poTable = [
     "入仓单号\t平台\t采购日期\tSPUID\t颜色\t尺码\t数量\t进货单价",
-    `\t1688\t2026-09-01\t${poBefore.sku}\t黑色\tM\t4\t66`,
+    `\t\t2026-09-01\t${poBefore.sku}\t黑色\tM\t4\t66`,
   ].join("\n")
   // 注意：这是 textarea，要用 HTMLTextAreaElement 的 value setter（HTMLInputElement 的会报 Illegal invocation）
   // 而且解析走 onBlur，所以得先 focus、改值、再 blur 才会触发
@@ -631,6 +632,27 @@ async function main() {
   console.log("  采购金额合计已算出:", poPreviewText.includes("采购金额合计"))
   await shot("08c3-purchase-import-preview")
   console.log("  含「上传截图识别」入口:", poPreviewText.includes("上传截图识别"))
+
+  // 「平台」统一设置框：表里没写平台时由它兜底（截图识别就是这个场景）
+  const poPlatCell = () => evaluate(`(() => {
+    const d = document.querySelector('[role=dialog]');
+    const tr = d && d.querySelector('tbody tr');
+    return tr ? (tr.children[6].innerText || '').trim() : 'NO_ROW';
+  })()`)
+  console.log("  有「平台」统一设置框:", await evaluate(`!!document.querySelector('#po-import-platform')`))
+  console.log("  未设平台时该列为空（只有日期）:", await poPlatCell())
+  const poSetPlat = await evaluate(`(() => {
+    const el = document.querySelector('#po-import-platform');
+    if (!el) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, '1688');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(700)
+  const poPlatAfter = await poPlatCell()
+  console.log("  填「1688」后该列变成:", poPlatAfter, "| 操作成功:", poSetPlat)
+  console.log("  ✅ 平台已整批应用:", poPlatAfter.includes("1688"))
   // 预览行可编辑：清空第 1 行 SPUID → 变成 0 张可导；填回 → 恢复 1 张
   const clearSku = await evaluate(`(() => {
     const el = document.querySelector('[aria-label="第 1 行 SPUID"]');
@@ -678,6 +700,13 @@ async function main() {
   console.log("  导入后商品:", poAfterState)
   console.log("  ✅ 库存没变:", poAfterState?.stock === poBefore.stock)
   console.log("  ✅ 成本更新为 66:", poAfterState?.cost === 66)
+  const poStored = await evaluate(`(() => {
+    const rows = JSON.parse(localStorage.getItem('yunguan.demo.purchase-orders.v1') || '[]');
+    const last = rows[0];
+    return last ? { platform: last.platform, count_stock: last.count_stock, items: last.items.length } : null;
+  })()`)
+  console.log("  落库的入仓单:", poStored)
+  console.log("  ✅ 入仓单带上了平台 1688:", poStored?.platform === "1688")
   const poListText = await bodyText()
   console.log("  入仓单已出现:", poListText.includes("导入") || poListText.includes("仅成本"))
   console.log("  标了「仅成本·不计库存」:", poListText.includes("仅成本·不计库存"))

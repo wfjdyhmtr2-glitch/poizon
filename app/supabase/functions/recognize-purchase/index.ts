@@ -4,14 +4,21 @@
  * 浏览器没有视觉能力，所以由服务端调视觉模型：喂一张「采购订单/购物车/采购单」截图，
  * 吐出结构化的采购明细，前端填进「入仓单批量导入」的预览表里，人工核对后一次导入。
  *
- * ── 部署步骤（Supabase 控制台，约 2 分钟；密钥与 recognize-product 共用）──
+ * ── 部署步骤（Supabase 控制台；密钥与 recognize-product 共用，不用重复配）──
+ * ⚠️ 「函数名」不是一开始让你填的，它在**编辑器底部**（`Deploy function` 按钮旁边）——
+ *    很多人卡在这一步。顺序是「先删模板 → 再粘代码 → 最后填名字并部署」：
  *   1. 左侧 Edge Functions → Deploy a new function → Via Editor
- *   2. 函数名填：recognize-purchase     （必须完全一致，前端按这个名字调用）
- *   3. 把本文件内容整体粘进去，删掉模板示例代码，点 Deploy
- *   4. Settings → Edge Functions → Secrets 里确认有：
- *        VISION_API_KEY = 你的视觉模型密钥（和 recognize-product 用同一个）
- *        （可选）VISION_BASE_URL / VISION_MODEL
- *   5. 顶部 "Verify JWT with legacy secret" 保持关闭（函数内部自己校验登录态）
+ *      （若先弹出模板列表，随便选一个，下一步会把模板代码整个删掉）
+ *   2. 编辑器里先清空：Command + A → Delete
+ *   3. 把本文件内容整段粘进去（Command + V）
+ *   4. 编辑器底部 **Function name** 填：recognize-purchase   （必须完全一致，前端按这个名字调用）
+ *   5. 有 "Verify JWT with legacy secret" 开关就关掉（与 recognize-product 一致），点 Deploy function
+ *   6. Secrets 里确认有 VISION_API_KEY（和 recognize-product 用同一个，通常早就配过了）
+ *
+ * ── 不想点界面？用 CLI 直接部署（无需 Docker）──
+ *   SUPABASE_ACCESS_TOKEN=<sbp_...> supabase functions deploy recognize-purchase \
+ *     --use-api --no-verify-jwt --project-ref <项目ref>
+ *   （access token 在 Account → Access Tokens → Generate new token 生成）
  *
  * 没部署这个函数也没关系：批量导入的「粘贴 / Excel」照旧能用，只是少了截图这条路。
  */
