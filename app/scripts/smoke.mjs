@@ -591,6 +591,41 @@ async function main() {
   console.log("  关闭弹窗:", await clickByText("取消"))
   await sleep(1200)
 
+  console.log("\n=== 8c1b. 入仓单「复制」（单号自动 +1 且避开已占用）===")
+  const cpPoList = JSON.parse(
+    await evaluate(`(() => {
+      const rows = JSON.parse(localStorage.getItem('yunguan.demo.purchase-orders.v1') || '[]');
+      return JSON.stringify({ 单数: rows.length, 单号: rows.map((r) => r.order_no) });
+    })()`),
+  )
+  console.log("  演示入仓单:", cpPoList.单数, "张 ·", cpPoList.单号.slice(0, 3).join(", "), "…")
+  const cpClick = await evaluate(`(() => {
+    const b = document.querySelector('[aria-label="复制入仓单"]');
+    if (!b) return 'NOT_FOUND';
+    const r = b.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    ['mousedown', 'mouseup', 'click'].forEach((t) => b.dispatchEvent(new MouseEvent(t, o)));
+    return 'CLICKED';
+  })()`)
+  console.log("  点第一行的复制:", cpClick)
+  await sleep(900)
+  const cpText = await bodyText()
+  const cpNo = await evaluate(`(() => { const el = document.querySelector('#po-order-no'); return el ? el.value : null })()`)
+  console.log("  弹窗标题为「复制入仓单」:", cpText.includes("复制入仓单"))
+  console.log("  单号自动 +1:", cpNo, "（原单", cpPoList.单号[0], "）")
+  console.log("  ✅ 新单号不与已有单重号:", !cpPoList.单号.includes(cpNo))
+  console.log("  ✅ 新单号是原单号往后递增:", (() => {
+    const m1 = String(cpPoList.单号[0]).match(/^(.*?)(\d+)$/)
+    const m2 = String(cpNo || "").match(/^(.*?)(\d+)$/)
+    if (!m1 || !m2) return false
+    return m1[1] === m2[1] && Number(m2[2]) > Number(m1[2])
+  })())
+  const cpRows = await evaluate(`(() => document.querySelectorAll('[aria-label="删除该行"]').length)()`)
+  console.log("  明细已带过来（行数 > 1）:", cpRows > 1, "行数 =", cpRows)
+  await shot("08c1b-purchase-copy-dialog")
+  console.log("  取消复制弹窗:", await clickByText("取消"))
+  await sleep(900)
+
   console.log("\n=== 8c2. 入仓单批量导入（补录历史采购：不动库存、只更新成本）===")
   // 挑一个演示商品，记下导入前的库存与成本
   const poBefore = await evaluate(`(() => {

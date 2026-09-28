@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ClipboardList,
+  CopyPlus,
   FileSpreadsheet,
   Loader2,
   PackagePlus,
@@ -70,6 +71,8 @@ export function PurchasesPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [orderNo, setOrderNo] = useState("")
+  /** 非空表示当前弹窗是「复制」出来的，值为原单号（只影响标题与提示） */
+  const [copyFromNo, setCopyFromNo] = useState<string | null>(null)
   const [platform, setPlatform] = useState("")
   const [purchasedAt, setPurchasedAt] = useState(todayStr())
   const [shippingFee, setShippingFee] = useState("")
@@ -133,7 +136,69 @@ export function PurchasesPage() {
   }
 
   function openCreate() {
+    setCopyFromNo(null)
     resetDraft()
+    setDialogOpen(true)
+  }
+
+  /**
+   * 复制用的单号：把末尾数字 +1（保留原有补零位数，如 WH-001 → WH-002）。
+   * 如果算出来的号已经被占用，就继续往上加到没被占用为止；末尾没有数字就追加「-2」。
+   */
+  function nextOrderNo(base: string): string {
+    const used = new Set(orders.map((o) => o.order_no))
+    const trimmed = base.trim()
+    const m = trimmed.match(/^(.*?)(\d+)$/)
+    if (!m) {
+      let n = 2
+      while (used.has(`${trimmed}-${n}`)) n += 1
+      return `${trimmed}-${n}`
+    }
+    const prefix = m[1]
+    const width = m[2].length
+    let n = Number(m[2]) + 1
+    let candidate = `${prefix}${String(n).padStart(width, "0")}`
+    while (used.has(candidate)) {
+      n += 1
+      candidate = `${prefix}${String(n).padStart(width, "0")}`
+    }
+    return candidate
+  }
+
+  /** 复制一张入仓单：内容照搬，单号 +1，采购日期默认今天（复制出来的是新的一次采购） */
+  function openCopy(po: PurchaseOrder) {
+    setCopyFromNo(po.order_no)
+    setOrderNo(nextOrderNo(po.order_no))
+    setPlatform(po.platform ?? "")
+    setPurchasedAt(todayStr())
+    setShippingFee(po.shipping_fee === null ? "" : String(po.shipping_fee))
+    setRemark(po.remark ?? "")
+    setItems(
+      po.items.length
+        ? po.items.map((it) => ({
+            key: crypto.randomUUID(),
+            sku: it.sku,
+            name: it.name ?? "",
+            // 明细里填的是「进货总价」，按单价 × 数量还原
+            price: it.unit_cost === null ? null : Number((it.unit_cost * it.quantity).toFixed(2)),
+            color: it.color,
+            size: it.size,
+            quantity: it.quantity,
+            unit_cost: it.unit_cost,
+          }))
+        : [
+            {
+              key: crypto.randomUUID(),
+              sku: "",
+              name: "",
+              price: null,
+              color: "",
+              size: "",
+              quantity: 1,
+              unit_cost: null,
+            },
+          ],
+    )
     setDialogOpen(true)
   }
 
@@ -301,7 +366,7 @@ export function PurchasesPage() {
                   <TableHead className="w-[80px] text-right">总件数</TableHead>
                   <TableHead className="w-[110px] text-right">总金额</TableHead>
                   <TableHead className="w-[90px] text-right">运费</TableHead>
-                  <TableHead className="w-[70px] text-right">操作</TableHead>
+                  <TableHead className="w-[84px] text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -368,6 +433,17 @@ export function PurchasesPage() {
                         {po.shipping_fee === null ? "—" : formatMoney(po.shipping_fee)}
                       </TableCell>
                       <TableCell className="text-right">
+                        <div className="flex justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7 text-muted-foreground"
+                          onClick={() => openCopy(po)}
+                          aria-label="复制入仓单"
+                          title="复制成新单，单号自动 +1"
+                        >
+                          <CopyPlus className="size-3.5" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -382,6 +458,7 @@ export function PurchasesPage() {
                             <Trash2 className="size-3.5" />
                           )}
                         </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   )
@@ -403,16 +480,30 @@ export function PurchasesPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
-            <DialogTitle>新建入仓单</DialogTitle>
+            <DialogTitle>{copyFromNo ? "复制入仓单" : "新建入仓单"}</DialogTitle>
             <DialogDescription>
-              一张单记录一次采购。新款会自动建档，老款自动加库存并按加权平均更新成本价；明细里的颜色/尺码是商品规格的二级单元。
+              {copyFromNo ? (
+                <>
+                  已按 <span className="font-mono">{copyFromNo}</span> 的内容填好，单号自动 +1，
+                  采购日期默认今天 —— 确认后创建的是<strong>新单</strong>，不会改动原单。
+                </>
+              ) : (
+                <>
+                  一张单记录一次采购。新款会自动建档，老款自动加库存并按加权平均更新成本价；明细里的颜色/尺码是商品规格的二级单元。
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
-              <Label>入仓单号</Label>
-              <Input value={orderNo} onChange={(e) => setOrderNo(e.target.value)} className="font-mono" />
+              <Label htmlFor="po-order-no">入仓单号</Label>
+              <Input
+                id="po-order-no"
+                value={orderNo}
+                onChange={(e) => setOrderNo(e.target.value)}
+                className="font-mono"
+              />
             </div>
             <div className="space-y-1.5">
               <Label>购入平台</Label>
