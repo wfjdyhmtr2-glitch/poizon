@@ -52,6 +52,26 @@ interface DraftItem {
   unit_cost: number | null
 }
 
+/**
+ * 从剪贴板里取出图片文件。
+ * 优先 clipboardData.files；有些来源（聊天工具复制图片）只填 items、不填 files，
+ * 这时用 items[kind=file].getAsFile() 兜底。
+ */
+function imageFilesFromClipboard(e: ClipboardEvent): File[] {
+  const dt = e.clipboardData
+  if (!dt) return []
+  const fromFiles = [...dt.files].filter((f) => f.type.startsWith("image/"))
+  if (fromFiles.length) return fromFiles
+  const out: File[] = []
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const f = item.getAsFile()
+      if (f) out.push(f)
+    }
+  }
+  return out
+}
+
 function todayStr() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
@@ -140,13 +160,14 @@ export function PurchasesPage() {
   }
 
   /**
-   * 页面级粘贴：粘的是图片就直接进截图识别（自动打开导入弹窗）。
-   * 弹窗已经开着时不接管——弹窗自己挂了 onPaste，否则同一张图会识别两次。
+   * 页面级粘贴：粘的是图片就直接进截图识别（弹窗没开就顺手打开）。
+   * - 挂在 window 上：弹窗内外、焦点在哪个元素上都能收到（只此一个入口，不会重复识别）
+   * - 微信/QQ 等聊天工具「复制图片」时，剪贴板可能只有 items 没有 files，所以两条都看
+   * - 粘纯文本不接管，照旧走原来的表格粘贴
    */
   useEffect(() => {
-    if (importOpen) return
     function onPaste(e: ClipboardEvent) {
-      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"))
+      const files = imageFilesFromClipboard(e)
       if (!files.length) return
       e.preventDefault()
       setPendingShots(files)
@@ -154,7 +175,7 @@ export function PurchasesPage() {
     }
     window.addEventListener("paste", onPaste)
     return () => window.removeEventListener("paste", onPaste)
-  }, [importOpen])
+  }, [])
 
   function openCreate() {
     setCopyFromNo(null)

@@ -486,14 +486,8 @@ export function PurchaseImportDialog({
     <Dialog open={open} onOpenChange={(v) => !importing && (v ? onOpenChange(v) : (reset(), onOpenChange(v)))}>
       <DialogContent
         className="max-h-[88vh] max-w-4xl overflow-y-auto thin-scrollbar"
-        onPaste={(e) => {
-          // 直接对着弹窗按 Command+V 粘截图
-          const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"))
-          if (files.length) {
-            e.preventDefault()
-            void recognizeShots(files)
-          }
-        }}
+        // 粘贴统一由页面级监听接管（见 PurchasesPage）：
+        // 那边是 window 级，弹窗内外、焦点在哪都能收到；这里再挂一个会导致同一张图识别两次
       >
         <DialogHeader>
           <DialogTitle>批量导入采购（入仓单）</DialogTitle>

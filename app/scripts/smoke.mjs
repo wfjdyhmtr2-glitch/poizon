@@ -656,6 +656,44 @@ async function main() {
   )
   console.log("    弹窗里的识别提示:", (psAfterPaste.match(/shot\.png[^\n]*/) || [])[0] || "(无)")
   await shot("08c1c-paste-shot-opened")
+
+  // 弹窗开着时再粘一张（以前的实现会漏掉这种情况，现在统一走 window 级监听）
+  const psPasteWhileOpen = await evaluate(`(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 320; canvas.height = 100;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 320, 100);
+    ctx.fillStyle = "#000"; ctx.font = "14px sans-serif";
+    ctx.fillText("第二张 卫衣 白色 L x1 66.00", 10, 40);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], "第二张.png", { type: "image/png" }));
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 2000));
+    return (document.body.innerText || "").includes("第二张.png") ? "HANDLED" : "MISSED";
+  })()`)
+  console.log("  弹窗开着时再粘一张也能识别:", psPasteWhileOpen)
+
+  // 只有 items、没有 files 的剪贴板（微信/QQ 复制图片常见）——显式构造这种事件
+  const psItemsOnly = await evaluate(`(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 300; canvas.height = 90;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 300, 90);
+    ctx.fillStyle = "#000"; ctx.font = "14px sans-serif";
+    ctx.fillText("只有 items 的剪贴板 88.00", 10, 40);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const file = new File([blob], "仅items.png", { type: "image/png" });
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { files: [], items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    window.dispatchEvent(ev);
+    await new Promise((r) => setTimeout(r, 2000));
+    return (document.body.innerText || "").includes("仅items.png") ? "HANDLED" : "MISSED";
+  })()`)
+  console.log("  只有 items 的剪贴板也能识别（微信场景）:", psItemsOnly)
+
   console.log("  关掉弹窗:", await clickByText("取消"))
   await sleep(900)
   // 纯文本粘贴不该被劫持（故意不写 \\n / \\t，避免模板字符串转义坑）
