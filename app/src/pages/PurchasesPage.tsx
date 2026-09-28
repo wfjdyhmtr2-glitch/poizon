@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ClipboardList,
   CopyPlus,
   FileSpreadsheet,
+  ImagePlus,
   Loader2,
   PackagePlus,
   Plus,
@@ -69,6 +70,9 @@ export function PurchasesPage() {
   const [spuInfos, setSpuInfos] = useState<SpuInfo[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  /** 页面级粘贴 / 一键识别攒下的截图，交给导入弹窗自动识别 */
+  const [pendingShots, setPendingShots] = useState<File[]>([])
+  const shotPickRef = useRef<HTMLInputElement>(null)
   const [saving, setSaving] = useState(false)
   const [orderNo, setOrderNo] = useState("")
   /** 非空表示当前弹窗是「复制」出来的，值为原单号（只影响标题与提示） */
@@ -134,6 +138,23 @@ export function PurchasesPage() {
       { key: crypto.randomUUID(), sku: "", name: "", price: null, color: "", size: "", quantity: 1, unit_cost: null },
     ])
   }
+
+  /**
+   * 页面级粘贴：粘的是图片就直接进截图识别（自动打开导入弹窗）。
+   * 弹窗已经开着时不接管——弹窗自己挂了 onPaste，否则同一张图会识别两次。
+   */
+  useEffect(() => {
+    if (importOpen) return
+    function onPaste(e: ClipboardEvent) {
+      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"))
+      if (!files.length) return
+      e.preventDefault()
+      setPendingShots(files)
+      setImportOpen(true)
+    }
+    window.addEventListener("paste", onPaste)
+    return () => window.removeEventListener("paste", onPaste)
+  }, [importOpen])
 
   function openCreate() {
     setCopyFromNo(null)
@@ -279,6 +300,10 @@ export function PurchasesPage() {
             <Button variant="outline" size="sm" onClick={load} disabled={loading}>
               <RefreshCcw className={cn("size-4", loading && "animate-spin")} />
               刷新
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => shotPickRef.current?.click()}>
+              <ImagePlus className="size-4" />
+              截图识别
             </Button>
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
               <FileSpreadsheet className="size-4" />
@@ -469,11 +494,29 @@ export function PurchasesPage() {
         </Card>
       )}
 
+      {/* 一键截图识别：选完图直接交给导入弹窗去识别 */}
+      <input
+        ref={shotPickRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = [...(e.target.files ?? [])]
+          e.target.value = ""
+          if (!files.length) return
+          setPendingShots(files)
+          setImportOpen(true)
+        }}
+      />
+
       <PurchaseImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         spuInfos={spuInfos}
         onDone={load}
+        pendingShots={pendingShots}
+        onShotsHandled={() => setPendingShots([])}
       />
 
       {/* 新建入仓单 */}

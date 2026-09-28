@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Download, FileSpreadsheet, ImagePlus, Loader2, Upload } from "lucide-react"
 
 import { OptionCombobox } from "@/components/OptionCombobox"
@@ -132,13 +132,23 @@ type Props = {
   onOpenChange: (open: boolean) => void
   spuInfos: SpuInfo[]
   onDone: () => void
+  /** 页面级粘贴 / 一键识别传进来的截图：弹窗打开后自动开始识别 */
+  pendingShots?: File[]
+  onShotsHandled?: () => void
 }
 
 /**
  * 入仓单批量导入：粘贴或上传一张采购表，按「入仓单号」自动分成多张入仓单。
  * 「计入库存」不勾 = 补录历史采购：只更新成本档案，不动库存。
  */
-export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: Props) {
+export function PurchaseImportDialog({
+  open,
+  onOpenChange,
+  spuInfos,
+  onDone,
+  pendingShots,
+  onShotsHandled,
+}: Props) {
   const { backend, bumpData } = useApp()
   const [rows, setRows] = useState<ParsedRow[]>([])
   const [notice, setNotice] = useState("")
@@ -162,6 +172,19 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
     }
     return map
   }, [spuInfos])
+
+  /** 已经处理过的这批截图（用对象引用比对，防止父组件重渲染导致重复识别） */
+  const handledShotsRef = useRef<File[] | null>(null)
+
+  /** 页面级粘贴 / 一键「截图识别」传进来的图：弹窗打开后自动跑识别 */
+  useEffect(() => {
+    if (!open || !pendingShots?.length || handledShotsRef.current === pendingShots) return
+    handledShotsRef.current = pendingShots
+    void recognizeShots(pendingShots)
+    onShotsHandled?.()
+    // recognizeShots 是组件内的函数声明，故意不进依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, pendingShots, onShotsHandled])
 
   function reset() {
     setRows([])
@@ -477,6 +500,9 @@ export function PurchaseImportDialog({ open, onOpenChange, spuInfos, onDone }: P
           <DialogDescription>
             <strong>截图识别</strong>：把采购订单截图丢进来（或直接 Command+V 粘贴），自动读出商品、规格、数量、单价；
             也可以<strong>粘贴 / 上传表格</strong>。按「入仓单号」自动分成多张入仓单。
+            <span className="text-muted-foreground">
+              （在入仓管理页面上直接 Command+V 粘截图也行，会自动打开这里）
+            </span>
             <br />
             <span className="text-muted-foreground">
               表格需要的列：<strong>SPUID</strong>（填货号也能自动认）、<strong>数量</strong>、

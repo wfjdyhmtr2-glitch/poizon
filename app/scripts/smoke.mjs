@@ -626,6 +626,48 @@ async function main() {
   console.log("  取消复制弹窗:", await clickByText("取消"))
   await sleep(900)
 
+  console.log("\n=== 8c1c. 页面上直接粘截图 → 自动进识别 ===")
+  await goto(`${BASE}/#/purchases`, 2200)
+  const psBefore = await bodyText()
+  console.log("  初始没打开弹窗:", !psBefore.includes("批量导入采购"))
+  console.log("  页面头部有「截图识别」按钮:", psBefore.includes("截图识别"))
+  // 用 canvas 现画一张真 PNG（1x1 的 base64 常被判定 decode 失败），再发 ClipboardEvent 模拟真人 Command+V
+  const psImagePaste = await evaluate(`(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 320; canvas.height = 120;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 320, 120);
+    ctx.fillStyle = "#000"; ctx.font = "14px sans-serif";
+    ctx.fillText("订单 2026-09-28", 10, 30);
+    ctx.fillText("卫衣 黑色 M  x2", 10, 60);
+    ctx.fillText("单价 88.00", 10, 90);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], "shot.png", { type: "image/png" }));
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 2000));
+    return document.body.innerText.includes("批量导入采购") ? "OPENED" : "NOT_OPENED";
+  })()`)
+  console.log("  粘图后自动打开导入弹窗:", psImagePaste)
+  const psAfterPaste = await bodyText()
+  console.log(
+    "  识别确实被触发到服务端那一步:",
+    /shot\.png/.test(psAfterPaste) && (psAfterPaste.includes("演示模式") || psAfterPaste.includes("没认出采购明细")),
+  )
+  console.log("    弹窗里的识别提示:", (psAfterPaste.match(/shot\.png[^\n]*/) || [])[0] || "(无)")
+  await shot("08c1c-paste-shot-opened")
+  console.log("  关掉弹窗:", await clickByText("取消"))
+  await sleep(900)
+  // 纯文本粘贴不该被劫持（故意不写 \\n / \\t，避免模板字符串转义坑）
+  const psTextPaste = await evaluate(`(async () => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", "SPUID 数量 进货单价 TN002YR 1 88");
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 1200));
+    return document.body.innerText.includes("批量导入采购") ? "OPENED" : "STILL_CLOSED";
+  })()`)
+  console.log("  粘纯文本不会误开弹窗:", psTextPaste)
+
   console.log("\n=== 8c2. 入仓单批量导入（补录历史采购：不动库存、只更新成本）===")
   // 挑一个演示商品，记下导入前的库存与成本
   const poBefore = await evaluate(`(() => {
